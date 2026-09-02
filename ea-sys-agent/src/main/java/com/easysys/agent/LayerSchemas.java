@@ -84,4 +84,67 @@ public final class LayerSchemas {
                 }
                 """;
     }
+
+    /**
+     * 流失风险批量评估 schema（churn_scan 主路径）：成员明细 + 聚合 summary，框架层整体校验。
+     */
+    public static String churnScanSchema() {
+        return """
+                {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "required": ["results", "summary"],
+                  "properties": {
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["contact_id", "churn_risk", "tier", "drivers"],
+                        "properties": {
+                          "contact_id": { "type": "integer" },
+                          "churn_risk": { "type": "integer", "minimum": 0, "maximum": 100 },
+                          "tier": { "enum": ["HIGH", "MEDIUM", "LOW"] },
+                          "drivers": { "type": "array", "items": { "type": "string" } }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
+                    "summary": {
+                      "type": "object",
+                      "required": ["scanned", "HIGH", "MEDIUM", "LOW"],
+                      "properties": {
+                        "scanned": { "type": "integer" },
+                        "HIGH": { "type": "integer" },
+                        "MEDIUM": { "type": "integer" },
+                        "LOW": { "type": "integer" }
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+                """;
+    }
+
+    /**
+     * 流失风险评估 schema：风险分 0-100 + 等级 + 驱动因子（CHURN 输出约束，LLM 接入后硬校验）。
+     */
+    public static String churnRiskSchema() {
+        return """
+                {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "required": ["churn_risk", "tier", "drivers"],
+                  "properties": {
+                    "churn_risk": { "type": "integer", "minimum": 0, "maximum": 100 },
+                    "tier": { "enum": ["HIGH", "MEDIUM", "LOW"] },
+                    "drivers": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "流失驱动因子（如：30天未活跃、连续2周无会话）"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+                """;
+    }
 }

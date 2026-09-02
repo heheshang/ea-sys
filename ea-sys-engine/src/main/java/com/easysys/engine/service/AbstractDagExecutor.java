@@ -29,6 +29,9 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.time.Duration;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * DAG 执行器公共骨架：拓扑序推进状态机，CONDITION 按出边 DSL 分流，DELAY/UPDATE/END/TRIGGER
@@ -42,6 +45,8 @@ import java.util.Map;
  * - 节点异常 → 该节点 FAILED、执行 FAILED 并提交（报告可见病根），后续节点不再执行
  */
 public abstract class AbstractDagExecutor {
+
+    private static final Logger log = LoggerFactory.getLogger(AbstractDagExecutor.class);
 
     protected final ExecutionMapper executionMapper;
     protected final ExecutionNodeStateMapper stateMapper;
@@ -111,10 +116,13 @@ public abstract class AbstractDagExecutor {
         execution.setUpdatedAt(startedAt);
         executionMapper.insert(execution);
         Long executionId = execution.getId();
+        log.info("工作流执行开始 executionId={} workflowId={} version={} tenantId={} triggerType={} dryRun={} members={}",
+                executionId, workflowId, version, tenantId, triggerType, dryRun,
+                members == null ? 0 : members.size());
 
         String error = null;
         try {
-            runNodes(executionId, tenantId, nodes, edges, members, dryRun);
+            runNodes(executionId, workflowId, tenantId, nodes, edges, members, dryRun);
             Execution update = new Execution();
             update.setId(executionId);
             update.setStatus(ExecutionStatus.SUCCEEDED.name());
@@ -123,6 +131,9 @@ public abstract class AbstractDagExecutor {
             executionMapper.updateById(update);
         } catch (Exception e) {
             error = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            log.error("工作流执行失败 executionId={} workflowId={} tenantId={} triggerType={} dryRun={} members={}",
+                    executionId, workflowId, tenantId, triggerType, dryRun,
+                    members == null ? 0 : members.size(), e);
             Execution update = new Execution();
             update.setId(executionId);
             update.setStatus(ExecutionStatus.FAILED.name());
@@ -131,6 +142,10 @@ public abstract class AbstractDagExecutor {
             executionMapper.updateById(update);
         }
         Execution persisted = executionMapper.selectById(executionId);
+        log.info("工作流执行完成 executionId={} workflowId={} status={} durationMs={}ms members={} error={}",
+                executionId, workflowId, persisted.getStatus(),
+                Duration.between(startedAt, Instant.now()).toMillis(),
+                members == null ? 0 : members.size(), error == null ? "-" : error);
         return buildReport(persisted, workflowId, version, members == null ? 0 : members.size(), error);
     }
 
@@ -186,8 +201,8 @@ public abstract class AbstractDagExecutor {
         return condition == null || condition.isBlank() || "{}".equals(condition) || "null".equals(condition);
     }
 
-    private void runNodes(Long executionId, Long tenantId, List<WorkflowNode> nodes, List<WorkflowEdge> edges,
-                          List<MemberContext> members, boolean dryRun) {
+    private void runNodes(Long executionId, Long workflowId, Long tenantId, List<WorkflowNode> nodes,
+                          List<WorkflowEdge> edges, List<MemberContext> members, boolean dryRun) {
         if (members == null) {
             members = List.of();
         }
@@ -225,11 +240,15 @@ public abstract class AbstractDagExecutor {
                 WorkflowNode node = nodeByKey.get(key);
                 NodeType type = NodeType.valueOf(node.getType());
                 int contacts = here == null ? 0 : here.size();
+                log.info("执行节点 executionId={} workflowId={} node={}[{}] type={} 到达={} dryRun={}",
+                        executionId, workflowId, key, node.getName(), node.getType(), contacts, dryRun);
 
                 ObjectNode output = objectMapper.createObjectNode();
                 List<WorkflowEdge> outs = outByKey.getOrDefault(key, List.of());
                 if (type == NodeType.CONDITION) {
-                    splitConditional(here, outs, byId, conditionCache, output, arriving);
+                    Map<String, Long> routed = splitConditional(here, outs, byId, conditionCache, output, arriving);
+                    log.info("条件分流 executionId={} workflowId={} node={} routed={} dropped={}",
+                            executionId, workflowId, key, routed, output.path("dropped").asLong(0));
                 } else if (type == NodeType.AGENT_SPLIT) {
                     AgentSplitHandler split = agentSplitHandler.getIfAvailable();
                     if (split == null) {
@@ -240,6 +259,10 @@ public abstract class AbstractDagExecutor {
                     for (Map.Entry<String, LinkedHashSet<Long>> x : routed.entrySet()) {
                         arriving.put(x.getKey(), x.getValue());
                     }
+                    Map<String, Long> counts = new LinkedHashMap<>();
+                    routed.forEach((k, v) -> counts.put(k, (long) v.size()));
+                    log.info("分层分流 executionId={} workflowId={} node={} routed={}",
+                            executionId, workflowId, key, counts);
                 } else if (type == NodeType.ACTION) {
                     handleAction(executionId, node, here, byId, output);
                     passThrough(outs, here, arriving);
@@ -271,6 +294,11 @@ public abstract class AbstractDagExecutor {
                 state.setOutput(output.toString());
                 state.setUpdatedAt(Instant.now());
                 stateMapper.insert(state);
+                log.info("节点完成 executionId={} workflowId={} node={}[{}] type={} 到达={} 耗时={}ms",
+                        executionId, workflowId, key, node.getName(), node.getType(), contacts,
+                        Duration.between(inAt, Instant.now()).toMillis());
+                log.debug("节点输出 executionId={} workflowId={} node={} output={}",
+                        executionId, workflowId, key, output);
             } catch (Exception e) {
                 // 失败节点落库 FAILED + error（报告可见病根），向上抛出置整个执行 FAILED
                 ExecutionNodeState failed = new ExecutionNodeState();
@@ -289,22 +317,27 @@ public abstract class AbstractDagExecutor {
                 failed.setOutput(err.toString());
                 failed.setUpdatedAt(Instant.now());
                 stateMapper.insert(failed);
+                LinkedHashSet<Long> here = arriving.get(key);
+                log.error("节点执行失败 executionId={} workflowId={} node={}[{}] type={} 到达={} 耗时={}ms",
+                        executionId, workflowId, key,
+                        node == null ? "-" : node.getName(), node == null ? "?" : node.getType(),
+                        here == null ? 0 : here.size(), Duration.between(inAt, Instant.now()).toMillis(), e);
                 throw e;
             }
         }
     }
 
     /** CONDITION 分流：首个命中边路由；无条件边兜底；不命中丢弃。 */
-    private void splitConditional(LinkedHashSet<Long> here, List<WorkflowEdge> outs,
-                                  Map<Long, MemberContext> byId,
-                                  Map<String, ConditionCompiler.CompiledCondition> conditionCache,
-                                  ObjectNode output, Map<String, LinkedHashSet<Long>> arriving) {
+    private Map<String, Long> splitConditional(LinkedHashSet<Long> here, List<WorkflowEdge> outs,
+                                                  Map<Long, MemberContext> byId,
+                                                  Map<String, ConditionCompiler.CompiledCondition> conditionCache,
+                                                  ObjectNode output, Map<String, LinkedHashSet<Long>> arriving) {
         Map<String, Long> routed = new LinkedHashMap<>();
         output.put("contacts", here == null ? 0 : here.size());
         if (here == null || here.isEmpty()) {
             output.set("routed", objectMapper.valueToTree(routed));
             output.put("dropped", 0);
-            return;
+            return routed;
         }
         // 无条件边（兜底）
         WorkflowEdge elseEdge = null;
@@ -350,6 +383,7 @@ public abstract class AbstractDagExecutor {
         }
         output.set("routed", objectMapper.valueToTree(routed));
         output.put("dropped", dropped);
+        return routed;
     }
 
     private int delayMinutes(WorkflowNode node) {

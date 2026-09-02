@@ -32,6 +32,8 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.util.Set;
 
 /**
@@ -46,6 +48,8 @@ import java.util.Set;
  */
 @Service
 public class WorkflowExecutor extends AbstractDagExecutor {
+
+    private static final Logger log = LoggerFactory.getLogger(WorkflowExecutor.class);
 
     private final DeliveryRecordMapper deliveryRecordMapper;
     private final TemplateMapper templateMapper;
@@ -79,6 +83,8 @@ public class WorkflowExecutor extends AbstractDagExecutor {
             update.setStatus(ExecutionStatus.PARTIAL.name());
             update.setUpdatedAt(Instant.now());
             executionMapper.updateById(update);
+            log.warn("真实执行存在失败下发，状态降级 PARTIAL executionId={} workflowId={} members={}",
+                    report.executionId(), report.workflowId(), report.totalMembers());
             return report(report.executionId());
         }
         return report;

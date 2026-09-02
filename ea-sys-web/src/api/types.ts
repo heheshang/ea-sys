@@ -39,6 +39,7 @@ export type ConditionOp =
   | '>' | '>=' | '<' | '<='
   | 'equals' | 'not_equals' | 'in' | 'not_in' | 'contains'
   | 'exists' | 'not_exists'
+  | 'percentage'
 
 /** 边条件项：字段（event./contact./history. 前缀）+ 操作符 + 值。 */
 export interface ConditionItem {

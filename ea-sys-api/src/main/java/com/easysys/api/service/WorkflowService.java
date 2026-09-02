@@ -339,6 +339,8 @@ public class WorkflowService {
                         new LambdaQueryWrapper<ContactTag>().eq(ContactTag::getContactId, contactId))
                 .stream().map(ContactTag::getTag).toList();
         ctx.put("tags", tags);
+        // contact.id 恒为主键：percentage 分流/条件引用依赖（属性/直列同名一律覆盖，防伪造分桶）
+        ctx.put("id", contactId);
         return new AbstractDagExecutor.MemberContext(contactId, ctx, Map.of(), Map.of());
     }
 
@@ -673,6 +675,8 @@ public class WorkflowService {
             ctx.put("suppressedChannels", suppressedChannels(c.getSuppression()));
             List<String> t = tags.get(id);
             ctx.put("tags", t == null ? List.of() : t);
+            // contact.id 恒为主键（同 memberContextOf 语义，percentage 分流依赖）
+            ctx.put("id", id);
             members.add(new AbstractDagExecutor.MemberContext(id, ctx, Map.of(), Map.of()));
         }
         return members;

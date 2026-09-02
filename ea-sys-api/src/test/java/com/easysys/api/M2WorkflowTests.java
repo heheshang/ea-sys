@@ -168,6 +168,72 @@ class M2WorkflowTests {
     // ---------- 版本化 ----------
 
     @Test
+    void percentageConditionSplitsMembersDeterministically() throws Exception {
+        createContact(contactBody("P1", "13800001001", Map.of("bucket", "x"), List.of()));
+        createContact(contactBody("P2", "13800001002", Map.of("bucket", "x"), List.of()));
+
+        long audience = createAudience("all",
+                rule("AND", List.of(condNoValue("attribute.bucket", "exists"))));
+        long snapshot = circle(audience);
+        assertThat(membersOf(snapshot)).hasSize(2);
+
+        // 条件边 percentage=50（按 contact.id 稳定哈希分流），兜底 else → push
+        long wf = savePctCanvas(50);
+        mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
+                .andExpect(status().isOk());
+
+        // 两次干跑分流人数一致（确定性），且不丢人：sms + push = 2
+        String r1 = dryRunBody(wf, snapshot);
+        String r2 = dryRunBody(wf, snapshot);
+        int sms1 = nodeContacts(r1, "sms");
+        int push1 = nodeContacts(r1, "push");
+        int sms2 = nodeContacts(r2, "sms");
+        int push2 = nodeContacts(r2, "push");
+        assertThat(sms1 + push1).isEqualTo(2);
+        assertThat(sms2 + push2).isEqualTo(2);
+        assertThat(sms1).isEqualTo(sms2);
+        assertThat(push1).isEqualTo(push2);
+
+        // 边界：percentage=0 全走兜底（push），100 全走条件边（sms）
+        long wf0 = savePctCanvas(0);
+        mvc.perform(post("/api/workflows/{id}/publish", wf0).header(AUTH, bearer()))
+                .andExpect(status().isOk());
+        String r0 = dryRunBody(wf0, snapshot);
+        assertThat(nodeContacts(r0, "sms")).isEqualTo(0);
+        assertThat(nodeContacts(r0, "push")).isEqualTo(2);
+
+        long wf100 = savePctCanvas(100);
+        mvc.perform(post("/api/workflows/{id}/publish", wf100).header(AUTH, bearer()))
+                .andExpect(status().isOk());
+        String r100 = dryRunBody(wf100, snapshot);
+        assertThat(nodeContacts(r100, "sms")).isEqualTo(2);
+        assertThat(nodeContacts(r100, "push")).isEqualTo(0);
+    }
+
+    /**
+     * 保存校验拦截越界 percentage：编译期拒绝，400 + DSL 非法。
+     */
+    @Test
+    void percentageOutOfRangeRejectedOnSave() throws Exception {
+        String bad = "{\"name\":\"pct-bad\",\"nodes\":["
+                + "{\"key\":\"t\",\"type\":\"TRIGGER\"},"
+                + "{\"key\":\"c\",\"type\":\"CONDITION\"},"
+                + "{\"key\":\"a\",\"type\":\"ACTION\"},"
+                + "{\"key\":\"e\",\"type\":\"END\"}],"
+                + "\"edges\":["
+                + "{\"source\":\"t\",\"target\":\"c\"},"
+                + "{\"source\":\"c\",\"target\":\"a\",\"condition\":{\"op\":\"AND\",\"items\":[{\"field\":\"contact.id\",\"op\":\"percentage\",\"value\":150}]}},"
+                + "{\"source\":\"a\",\"target\":\"e\"}]}";
+        mvc.perform(post("/api/workflows").header(AUTH, bearer())
+                        .contentType(MediaType.APPLICATION_JSON).content(bad))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("DSL 非法")));
+    }
+
+    // ---------- 版本化 ----------
+
+    @Test
     void publishedSaveCreatesNewDraftVersionAndArchivesOldPublished() throws Exception {
         long wf = saveCanvas();
         mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
@@ -259,6 +325,54 @@ class M2WorkflowTests {
     }
 
     // ---------- helpers ----------
+
+    /** TRIGGER → CONDITION(percentage 条件边 → sms / 兜底 → push) → END 画布。 */
+    private long savePctCanvas(int pct) throws Exception {
+        String s = mvc.perform(post("/api/workflows").header(AUTH, bearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(pctCanvasBody(pct)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andReturn().getResponse().getContentAsString();
+        return Long.parseLong(JsonPath.read(s, "$.data.id").toString());
+    }
+
+    private String pctCanvasBody(int pct) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("name", "ab-split-" + pct);
+        m.put("description", "AB 分流");
+        m.put("nodes", List.of(
+                node("trigger", "TRIGGER", "开始", null),
+                node("cond", "CONDITION", "百分比分流", null),
+                node("sms", "ACTION", "短信",
+                        Map.of("channel", "sms", "templateId", 1, "unitCost", 0.05)),
+                node("push", "ACTION", "推送",
+                        Map.of("channel", "push", "templateId", 2)),
+                node("end", "END", "结束", null)));
+        m.put("edges", List.of(
+                edge("trigger", "cond", null),
+                edge("cond", "sms", "{\"op\":\"AND\",\"items\":[{\"field\":\"contact.id\",\"op\":\"percentage\",\"value\":" + pct + "}]}"),
+                edge("cond", "push", null),
+                edge("sms", "end", null),
+                edge("push", "end", null)));
+        return asJson(m);
+    }
+
+    private String dryRunBody(long wf, long snapshot) throws Exception {
+        return mvc.perform(post("/api/workflows/{id}/dry-run", wf).header(AUTH, bearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"audienceSnapshotId\":" + snapshot + "}"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+    }
+
+    private int nodeContacts(String body, String key) throws Exception {
+        Object v = JsonPath.read(body, "$.data.nodes[?(@.key=='" + key + "')].contacts");
+        if (v instanceof List<?> list && !list.isEmpty()) {
+            return ((Number) list.get(0)).intValue();
+        }
+        return 0;
+    }
 
     /** TRIGGER → CONDITION(条件边 高流失→sms / 兜底→push) → END 画布。 */
     private long saveCanvas() throws Exception {

@@ -302,4 +302,78 @@ class ConditionCompilerTest {
         assertTrue(expr.contains("\"level\""));
         assertFalse(expr.contains("OR 1=1"));
     }
+
+    // ---- percentage（AB/灰度稳定哈希分流） ----
+
+    private boolean pct(int pct, Object id) {
+        return eval(rule(item("contact.id", "percentage", pct)), Map.of("id", id));
+    }
+
+    @Test
+    void percentageBoundsExhaust() {
+        // 0% 恒不命中；100% 恒命中（bucket ∈ [0,100)，0 无可命中、100 全覆盖）
+        int[] ids = {1, 7, 42, 1001, 999999};
+        for (int id : ids) {
+            assertFalse(pct(0, id));
+            assertTrue(pct(100, id));
+        }
+        // 缺 id → false 不抛错
+        assertFalse(eval(rule(item("contact.id", "percentage", 50)), Map.of()));
+    }
+
+    @Test
+    void percentageIsDeterministicPerId() {
+        // 同 id 同 pct 多次求值结果恒等；不同 pct 分桶单调（bucket 固定，pct 越高覆盖越全）
+        for (int id = 1; id <= 500; id++) {
+            boolean at30 = pct(30, id);
+            for (int rep = 0; rep < 3; rep++) {
+                assertEquals(at30, pct(30, id));
+            }
+        }
+    }
+
+    @Test
+    void percentageIsMonotonicAcrossBucket() {
+        // 单个 id 存在分桶临界点 b：pct <= b 不命中、pct > b 命中 —— 连续 pct 单调不逆转
+        boolean prev = false;
+        for (int p = 0; p <= 100; p++) {
+            boolean hit = pct(p, 1001);
+            assertTrue(hit || !prev, "pct=" + p + " 由命中回落为不命中");
+            prev = hit;
+        }
+    }
+
+    @Test
+    void percentageUsesStringHashAcrossTypes() {
+        // 数字与同值字符串同分桶（String.valueOf 归一），避免 Long/Integer/String 类型漂移
+        ObjectNode n = rule(item("contact.id", "percentage", 50));
+        boolean asLong = compiler.evaluate(compiler.compile(n.toString()), Map.of(), Map.of("id", 1001L), Map.of());
+        boolean asStr = compiler.evaluate(compiler.compile(n.toString()), Map.of(), Map.of("id", "1001"), Map.of());
+        assertEquals(asLong, asStr);
+    }
+
+    @Test
+    void percentageInAndOrComposes() {
+        // 与现有逻辑操作符可组合：AND/OR 树内
+        ObjectNode r = m.createObjectNode();
+        r.put("op", "OR");
+        r.putArray("items")
+                .add(item("contact.level", "equals", "vip"))
+                .add(item("contact.id", "percentage", 10));
+        int id = 7;
+        boolean pctHit = pct(10, id);
+        assertEquals(pctHit, eval(r, Map.of("level", "normal", "id", id)));
+        assertTrue(eval(r, Map.of("level", "vip", "id", id)));
+    }
+
+    @Test
+    void percentageRejectsNonNumericAndOutOfRange() {
+        // 编译期校验：非数字 / 越界 value 直接拒绝
+        ObjectNode str = rule(item("contact.id", "percentage", "50"));
+        assertThrows(EngineException.class, () -> compiler.compile(str.toString()));
+        ObjectNode neg = rule(item("contact.id", "percentage", -1));
+        assertThrows(EngineException.class, () -> compiler.compile(neg.toString()));
+        ObjectNode over = rule(item("contact.id", "percentage", 101));
+        assertThrows(EngineException.class, () -> compiler.compile(over.toString()));
+    }
 }

@@ -38,6 +38,7 @@ const ALL_OPS: ConditionOp[] = [
   '>', '>=', '<', '<=',
   'equals', 'not_equals', 'in', 'not_in', 'contains',
   'exists', 'not_exists',
+  'percentage',
 ]
 
 function scopeOf(field: string): 'event' | 'contact' | 'history' {
@@ -47,14 +48,14 @@ function scopeOf(field: string): 'event' | 'contact' | 'history' {
 }
 
 function opsFor(field: string): ConditionOp[] {
-  // contact 列无数值比较；event/history 自由 key 全量操作符
+  // contact 列无数值比较；percentage 仅 contact.id 稳定哈希分流，event/history 不提供
   const scope = scopeOf(field)
   if (scope === 'contact') {
     const key = field.slice('contact.'.length)
     if (key === 'layer' || key === 'churn_risk') return ALL_OPS
     return ALL_OPS.filter((op) => !['>', '>=', '<', '<='].includes(op))
   }
-  return ALL_OPS
+  return ALL_OPS.filter((op) => op !== 'percentage')
 }
 
 function isGroup(item: ConditionItem | ConditionRule): item is ConditionRule {
@@ -68,6 +69,9 @@ function isInOp(op: ConditionOp): boolean {
 }
 function isNumericOp(op: ConditionOp): boolean {
   return ['>', '>=', '<', '<='].includes(op)
+}
+function isPctOp(op: ConditionOp): boolean {
+  return op === 'percentage'
 }
 
 function emitChange() {
@@ -111,6 +115,7 @@ function setField(item: ConditionItem, value: string) {
 function setOp(item: ConditionItem, value: ConditionOp) {
   item.op = value
   if (isExistsOp(value)) item.value = undefined
+  else if (isPctOp(value)) item.value = typeof item.value === 'number' ? item.value : 50
   else if (!isInOp(value) && Array.isArray(item.value)) item.value = ''
   else if (item.value === undefined) item.value = ''
   emitChange()
@@ -208,6 +213,18 @@ const isEmpty = computed(() => props.modelValue.items.length === 0)
         <template v-else-if="isNumericOp(asCond(item).op)">
           <el-input-number
             :model-value="Number(asCond(item).value ?? 0)"
+            size="small"
+            controls-position="right"
+            style="width: 140px"
+            @update:model-value="(v: number | undefined) => setValue(asCond(item), v ?? 0)"
+          />
+        </template>
+        <template v-else-if="isPctOp(asCond(item).op)">
+          <el-input-number
+            :model-value="Number(asCond(item).value ?? 50)"
+            :min="0"
+            :max="100"
+            :step="1"
             size="small"
             controls-position="right"
             style="width: 140px"

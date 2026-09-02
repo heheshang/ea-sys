@@ -43,7 +43,8 @@ public class ConditionCompiler {
     private static final Set<String> OPS = Set.of(
             ">", ">=", "<", "<=",
             "equals", "not_equals", "in", "not_in", "contains",
-            "exists", "not_exists");
+            "exists", "not_exists",
+            "percentage");
     private static final Pattern KEY_PATTERN = Pattern.compile("[A-Za-z0-9_.-]+");
 
     private final ExpressRunner runner;
@@ -101,6 +102,27 @@ public class ConditionCompiler {
                     return Boolean.FALSE;
                 }
                 return ctx.containsKey(list[1].toString()) && ctx.get(list[1].toString()) != null;
+            }
+        });
+        runner.addFunction("safe_pct", new Operator() {
+            @Override
+            public Object executeInner(Object[] list) {
+                // list = [ctx, key, pct]；ctx.key 的稳定哈希落入 [0,100)，命中 pct 以内 ⇒ true
+                Map<?, ?> ctx = asMap(list, 0);
+                if (ctx == null || list.length < 3 || list[1] == null) {
+                    return Boolean.FALSE;
+                }
+                Object id = ctx.get(list[1].toString());
+                if (id == null) {
+                    return Boolean.FALSE;
+                }
+                BigDecimal pct = toNumber(list[2]);
+                if (pct == null || pct.compareTo(BigDecimal.ZERO) < 0 || pct.compareTo(new BigDecimal("100")) > 0) {
+                    return Boolean.FALSE;
+                }
+                // String.hashCode 是语言规范定义的稳定哈希（跨 JVM 一致），负数经 floorMod 归一
+                int bucket = Math.floorMod(String.valueOf(id).hashCode(), 100);
+                return bucket < pct.intValue();
             }
         });
     }
@@ -204,6 +226,15 @@ public class ConditionCompiler {
             throw new EngineException("非法字段 key: " + key);
         }
         JsonNode value = item.get("value");
+        if ("percentage".equals(op)) {
+            if (value == null || !value.isNumber()) {
+                throw new EngineException("percentage 的 value 必须是 0-100 的数字");
+            }
+            BigDecimal pct = value.decimalValue();
+            if (pct.compareTo(BigDecimal.ZERO) < 0 || pct.compareTo(new BigDecimal("100")) > 0) {
+                throw new EngineException("percentage 的 value 必须在 0-100 区间");
+            }
+        }
         String ctxVar = prefix;
         return switch (op) {
             case "equals" -> "safe_eq(" + ctxVar + ", " + str(key) + ", " + literal(value, false) + ")";
@@ -217,6 +248,7 @@ public class ConditionCompiler {
             case "<=" -> "safe_lte(" + ctxVar + ", " + str(key) + ", " + literal(value, false) + ")";
             case "exists" -> "safe_exists(" + ctxVar + ", " + str(key) + ")";
             case "not_exists" -> "!safe_exists(" + ctxVar + ", " + str(key) + ")";
+            case "percentage" -> "safe_pct(" + ctxVar + ", " + str(key) + ", " + literal(value, false) + ")";
             default -> throw new EngineException("未知操作符: " + op);
         };
     }

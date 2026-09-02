@@ -32,7 +32,7 @@
     <qlexpress.version>3.3.2</qlexpress.version>
     <jjwt.version>0.12.6</jjwt.version>
     <redisson.version>3.52.0</redisson.version>
-    <agentscope.version>2.0.0</agentscope.version>
+    <agentscope.version>2.0.2</agentscope.version>
   </properties>
 
   <dependencyManagement>
@@ -100,6 +100,12 @@
       <dependency>
         <groupId>io.agentscope</groupId>
         <artifactId>agentscope-core</artifactId>
+        <version>${agentscope.version}</version>
+      </dependency>
+      <!-- Token Plan(OpenAI 兼容通道)。dashscope 扩展写死原生 API 路径,与 Token Plan 端点不兼容,弃用 -->
+      <dependency>
+        <groupId>io.agentscope</groupId>
+        <artifactId>agentscope-extensions-model-openai</artifactId>
         <version>${agentscope.version}</version>
       </dependency>
     </dependencies>

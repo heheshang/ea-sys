@@ -28,6 +28,12 @@
       <groupId>io.agentscope</groupId>
       <artifactId>agentscope-core</artifactId>
     </dependency>
+    <!-- OpenAI 兼容扩展：接入用户 Token Plan 套餐(openai:qwen3.7-plus + compatible-mode/v1 端点)。
+         dashscope 扩展写死原生 API 路径与此套餐不兼容,弃用 -->
+    <dependency>
+      <groupId>io.agentscope</groupId>
+      <artifactId>agentscope-extensions-model-openai</artifactId>
+    </dependency>
     <!-- 结构化输出 schema 语义校验（框架 native 路径只解析 JSON 不做语义校验，AgentExecutor 兜底层负责硬校验） -->
     <dependency>
       <groupId>com.networknt</groupId>

@@ -38,3 +38,12 @@ easysys:
   frequency:
     daily-cap: 10000
     user-window-hours: 24
+  agent:
+    llm:
+      # LLM 主提供方（Token Plan 套餐专属 OpenAI 兼容端点）。enabled 缺省 false 时执行器保持确定性 RuleModel。
+      # apiKey 经环境变量注入，不落库；key 缺失/失效/超时/结构不符均由执行器降级为确定性 fallback，执行不中断。
+      enabled: ${EA_LLM_ENABLED:false}
+      model-id: openai:qwen3.7-plus
+      base-url: https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+      api-key: ${EA_LLM_API_KEY:}
+      timeout-ms: 60000

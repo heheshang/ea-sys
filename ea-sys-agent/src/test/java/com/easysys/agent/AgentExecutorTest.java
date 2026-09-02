@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * AgentExecutor 闸门语义：主提供方失败 / schema 不符 / 低置信 → 确定性兜底且执行不中断。
@@ -154,6 +155,66 @@ class AgentExecutorTest {
         assertEquals("ERROR", outcome.status());
         assertEquals("fallback_invalid", outcome.reason());
         assertEquals("ERROR", outcome.audit().status());
+    }
+
+    private static final String LLM_BASE_URL = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
+
+    /**
+     * LLM 真连通：真实 key（env EA_LLM_API_KEY）走 qwen3.7-plus，断言主提供方输出过自身 schema。
+     * 无 key 时跳过（CI/本机默认不配，确定性链路不受影响）。静态 llmConfig 跨测试共享，finally 恢复 disabled。
+     */
+    @Test
+    void llmPrimarySucceedsWhenConfigured() {
+        String apiKey = System.getenv("EA_LLM_API_KEY");
+        assumeTrue(apiKey != null && !apiKey.isBlank(), "EA_LLM_API_KEY 未配置，跳过 LLM 真连通测试");
+        AgentExecutor.configureLlm(new AgentLlmConfig(true, "openai:qwen3.7-plus", LLM_BASE_URL, apiKey, 120_000));
+        try {
+            AgentOutcome outcome = AgentExecutor.run(PLANNER, PLANNER, "llm_unit", input(), CFG);
+            assertEquals("SUCCESS", outcome.status());
+            assertNotNull(outcome.output());
+            // LLM 输出过自身 schema 即可（层数由模型决定，非确定性固定契约）
+            assertTrue(outcome.output().path("layers").isArray());
+            assertTrue(outcome.output().path("layers").size() >= 1);
+            // 审计记录真实模型
+            assertEquals("openai:qwen3.7-plus", outcome.audit().model());
+        } finally {
+            AgentExecutor.configureLlm(null);
+        }
+    }
+
+    /**
+     * LLM 全挂（不可达端点）→ provider_error 落入确定性 fallback，执行不中断 —— 核心质保。
+     * 无 key 也成立：active() 要求 apiKey 非空，此场景显式注入假 key 触发真实网络失败路径。
+     */
+    @Test
+    void llmDownFallsBackToDeterministic() {
+        AgentExecutor.configureLlm(new AgentLlmConfig(true, "openai:qwen3.7-plus", "http://127.0.0.1:9/v1", "fake-key", 5_000));
+        try {
+            AgentOutcome outcome = AgentExecutor.run(PLANNER, PLANNER, "llm_down_unit", input(), CFG);
+            assertEquals("FALLBACK", outcome.status());
+            assertTrue(outcome.reason().startsWith("provider_error:"), "reason: " + outcome.reason());
+            // 确定性 fallback 结果完整可用
+            assertNotNull(outcome.output());
+            assertEquals("L1", outcome.output().path("layers").get(0).path("id").asText());
+            assertEquals(4, outcome.output().path("layers").size());
+        } finally {
+            AgentExecutor.configureLlm(null);
+        }
+    }
+
+    /**
+     * LLM 已配置但 apiKey 缺失 → active()=false，主提供方保持确定性，行为同 M6。
+     */
+    @Test
+    void llmInactiveWithoutApiKeyKeepsDeterministic() {
+        AgentExecutor.configureLlm(new AgentLlmConfig(true, "openai:qwen3.7-plus", LLM_BASE_URL, "", 5_000));
+        try {
+            AgentOutcome outcome = AgentExecutor.run(PLANNER, PLANNER, "llm_inactive_unit", input(), CFG);
+            assertEquals("SUCCESS", outcome.status());
+            assertEquals("deterministic", outcome.audit().model());
+        } finally {
+            AgentExecutor.configureLlm(null);
+        }
     }
 
     @Test

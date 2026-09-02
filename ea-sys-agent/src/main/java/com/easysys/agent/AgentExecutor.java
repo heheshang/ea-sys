@@ -12,6 +12,9 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.UserMessage;
 import io.agentscope.core.model.ExecutionConfig;
+import io.agentscope.core.model.Model;
+import io.agentscope.core.model.ModelCreationContext;
+import io.agentscope.core.model.ModelRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,6 +48,15 @@ public final class AgentExecutor {
 
     private static final Logger log = LoggerFactory.getLogger(AgentExecutor.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /** LLM 主提供方配置：从 application.yml 的 easysys.agent.llm 段注入（apiKey 经环境变量占位符，不入库）。 */
+    private static volatile AgentLlmConfig llmConfig = AgentLlmConfig.disabled();
+
+    /** Spring 侧 yml 绑定完成后调用；测试也可直接注入。传 null 恢复确定性默认。 */
+    public static void configureLlm(AgentLlmConfig config) {
+        llmConfig = config == null ? AgentLlmConfig.disabled() : config;
+        log.info("LLM 主提供方配置: enabled={} model={}", llmConfig.enabled(), llmConfig.modelId());
+    }
 
     /** networknt 2.0.0：SchemaRegistry 编译（1.5.5 的 JsonSchemaFactory API 已移除）。 */
     private static final SchemaRegistry SCHEMA_REGISTRY = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_7);
@@ -119,7 +131,9 @@ public final class AgentExecutor {
      */
     private static JsonNode tryPlan(StrategyAgent agent, String action, JsonNode input, AgentRunConfig cfg) throws Exception {
         Exception last = null;
-        for (int attempt = 0; attempt <= cfg.retries(); attempt++) {
+        // LLM 调用昂贵且外部故障通常立即可见（认证/网络），重试一次即降级，保证执行不中断的时效。
+        int retries = llmConfig.active() ? Math.min(cfg.retries(), 1) : cfg.retries();
+        for (int attempt = 0; attempt <= retries; attempt++) {
             try {
                 CompletableFuture<JsonNode> future = CompletableFuture.supplyAsync(
                         () -> {
@@ -130,7 +144,7 @@ public final class AgentExecutor {
                             }
                         }, CALL_POOL);
                 try {
-                    return future.get(cfg.timeoutMs(), TimeUnit.MILLISECONDS);
+                    return future.get(effectiveTimeoutMs(cfg), TimeUnit.MILLISECONDS);
                 } catch (TimeoutException te) {
                     future.cancel(true);
                     last = te;
@@ -147,13 +161,13 @@ public final class AgentExecutor {
      * 输出 JSON 由框架 native 路径解析，多租户隔离由 RuntimeContext(userId=tenantId, sessionId=action) 承载。
      */
     private static JsonNode callAgent(StrategyAgent agent, String action, JsonNode input, AgentRunConfig cfg) throws Exception {
-        RuleModel model = new RuleModel("deterministic", agent::plan);
+        Model model = primaryModel(agent);
         ReActAgent reAct = ReActAgent.builder()
                 .name(action)
                 .sysPrompt(sysPrompt(agent.type()))
                 .model(model)
                 .modelExecutionConfig(ExecutionConfig.builder()
-                        .timeout(Duration.ofMillis(cfg.timeoutMs()))
+                        .timeout(Duration.ofMillis(effectiveTimeoutMs(cfg)))
                         .maxAttempts(cfg.retries() + 1)
                         .build())
                 .build();
@@ -163,8 +177,31 @@ public final class AgentExecutor {
                 .build();
         JsonNode schema = MAPPER.readTree(agent.schema());
         Msg result = reAct.call(List.of(new UserMessage(input.toString())), schema, ctx)
-                .block(Duration.ofMillis(cfg.timeoutMs()));
+                .block(Duration.ofMillis(effectiveTimeoutMs(cfg)));
         return MAPPER.readTree(result.getTextContent());
+    }
+
+    /**
+     * 主提供方模型：LLM 已启用（yml 注入 apiKey）时经 ModelRegistry 解析 OpenAI 兼容模型
+     * （openai:qwen3.7-plus → Token Plan 端点），否则维持确定性 RuleModel —— 降级链路零改动即刻生效。
+     *
+     * <p>resolve 失败（如 apiKey 缺失/非法、provider 未注册）抛出异常，由 run 捕获为
+     * provider_error 落入确定性 fallback —— 「LLM 全挂仍可运营」的最后一道闸。</p>
+     */
+    private static Model primaryModel(StrategyAgent agent) {
+        AgentLlmConfig cfg = llmConfig;
+        if (cfg.active()) {
+            return ModelRegistry.resolve(cfg.modelId(), ModelCreationContext.builder()
+                    .apiKey(cfg.apiKey())
+                    .baseUrl(cfg.baseUrl())
+                    .build());
+        }
+        return new RuleModel("deterministic", agent::plan);
+    }
+
+    /** LLM 模式超时取配置值（qwen3.7-plus 为 reasoning 模型，响应 ~20s），确定性模式沿用调用方 cfg。 */
+    private static long effectiveTimeoutMs(AgentRunConfig cfg) {
+        return llmConfig.active() ? llmConfig.timeoutMs() : cfg.timeoutMs();
     }
 
     private static String tenantIdOr(String fallback) {
@@ -200,7 +237,7 @@ public final class AgentExecutor {
     }
 
     private static String agentTypeModel(StrategyAgent agent) {
-        return "deterministic";
+        return llmConfig.active() ? llmConfig.modelId() : "deterministic";
     }
 
     private static ThreadFactory daemonFactory(String prefix) {

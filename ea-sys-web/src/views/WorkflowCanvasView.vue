@@ -17,6 +17,7 @@ import dagre from '@dagrejs/dagre'
 import CanvasNode from '../components/canvas/CanvasNode.vue'
 import EdgeConditionEditor from '../components/canvas/EdgeConditionEditor.vue'
 import {
+  aiGenerate,
   createWorkflow,
   downloadPlanValidationTemplate,
   dryRunWorkflow,
@@ -30,6 +31,7 @@ import {
 import { listTemplates } from '../api/template'
 import { listAudiences, listSnapshots } from '../api/audience'
 import type {
+  AiGenerateResponse,
   Audience,
   AudienceSnapshot,
   ConditionRule,
@@ -597,6 +599,100 @@ async function openPlanReport() {
   }
 }
 
+/* ---------- AI 创建 ---------- */
+
+const aiDialog = ref(false)
+const aiPrompt = ref('')
+const aiGenerating = ref(false)
+const aiResult = ref<AiGenerateResponse | null>(null)
+
+function openAiDialog() {
+  aiPrompt.value = ''
+  aiResult.value = null
+  aiDialog.value = true
+}
+
+async function runAiGenerate() {
+  if (!aiPrompt.value.trim()) {
+    ElMessage.warning('请描述期望的工作流，如「每天上午9点向近30天未购买会员发送短信」')
+    return
+  }
+  aiGenerating.value = true
+  try {
+    aiResult.value = await aiGenerate(aiPrompt.value.trim())
+    ElMessage.success('草稿已生成，请核对工具调用与计划摘要后载入画布')
+  } catch (e) {
+    ElMessage.error((e as Error).message || 'AI 生成失败')
+  } finally {
+    aiGenerating.value = false
+  }
+}
+
+/** 应用 AI 草稿到画布（仍为未保存状态，走人工校对 → 保存/校验/发布）。 */
+function applyAiDraft() {
+  const draft = aiResult.value?.workflowDraft
+  if (!draft) return
+  name.value = draft.name ?? ''
+  description.value = draft.description ?? ''
+  status.value = ''
+  version.value = 0
+  draft.nodes.forEach((spec) => {
+    const m = /^(TRIGGER|CONDITION|AGENT_SPLIT|DELAY|ACTION|UPDATE|END)_(\d+)$/.exec(spec.key)
+    if (m) {
+      const t = m[1] as WorkflowNodeType
+      const n = Number(m[2])
+      if (n > NODE_KEY_COUNTERS[t]) NODE_KEY_COUNTERS[t] = n
+    }
+  })
+  setNodes(
+    draft.nodes.map((spec): LiteNode => ({
+      id: spec.key,
+      type: 'canvas',
+      position: spec.position && !Number.isNaN(spec.position.x) ? spec.position : { x: 120, y: 80 },
+      data: { real: { ...spec, position: null } },
+    })),
+  )
+  setEdges(
+    (draft.edges ?? []).map((spec): LiteEdge => ({
+      id: `${spec.source}->${spec.target}`,
+      source: spec.source,
+      target: spec.target,
+      type: 'smoothstep',
+      markerEnd: { type: MarkerType.ArrowClosed },
+      data: { condition: spec.condition ?? null },
+    })),
+  )
+  aiDialog.value = false
+  // 补拉人群列表：空画布 load() 不加载，AI 草稿需人工补 audienceId 才有下拉可选
+  loadAudiences()
+  // position 全为兜底默认 → 触发自动布局；渲染后 fitView
+  setTimeout(() => {
+    autoLayout()
+    fitView({ padding: 0.15 })
+  }, 0)
+  ElMessage.success('AI 草稿已载入画布，请人工校对节点配置后保存')
+}
+
+function toolLabel(name: string): string {
+  const M: Record<string, string> = {
+    list_channels: '查询通道配置',
+    search_templates: '检索模板',
+    search_audiences: '检索人群',
+    build_dag: '编排 DAG',
+    validate_dag: '校验 DAG',
+  }
+  return M[name] ?? name
+}
+
+function toolArgsText(args: Record<string, unknown> | null): string {
+  if (!args) return '{}'
+  try {
+    return JSON.stringify(args, null, 1)
+  } catch {
+    return String(args)
+  }
+}
+
 /* ---------- 自动布局 ---------- */
 
 function autoLayout() {
@@ -641,6 +737,7 @@ onMounted(load)
           发布
         </el-button>
         <el-button type="warning" :disabled="status !== 'published'" @click="openDryRun">干跑</el-button>
+        <el-button type="primary" plain @click="openAiDialog">AI 创建</el-button>
         <el-button type="primary" plain @click="openPlanImport">导入计划校验</el-button>
         <el-button @click="openPlanReport">校验报告</el-button>
       </div>
@@ -875,6 +972,56 @@ onMounted(load)
         </div>
       </div>
     </div>
+
+    <!-- AI 创建 -->
+    <el-dialog v-model="aiDialog" title="AI 创建（自然语言 → DAG 草稿）" width="640px">
+      <el-form label-width="0">
+        <el-input
+          v-model="aiPrompt"
+          type="textarea"
+          :rows="3"
+          placeholder="描述期望的工作流，例如：每天上午9点向近30天未购买会员发送短信，使用 618大促通知 模板，延迟2天后再次提醒"
+        />
+      </el-form>
+      <div v-if="aiResult" class="ai-result">
+        <div class="ai-plan-summary">{{ aiResult.planSummary }}</div>
+
+        <el-alert
+          v-if="aiResult.audienceHint && !aiResult.audienceHint.matched"
+          type="warning"
+          :closable="false"
+          class="ai-audience-alert"
+        >
+          <template #default>
+            <div>未匹配到现有人群（建议名：{{ aiResult.audienceHint.suggestedName ?? '-' }}）</div>
+            <div class="ai-alert-note">{{ aiResult.audienceHint.note ?? 'AI 不自动创建人群，请先人工圈选后再保存。' }}</div>
+            <div class="ai-alert-actions">
+              <el-button size="small" type="warning" plain @click="router.push('/audiences')">去人群管理圈选</el-button>
+            </div>
+          </template>
+        </el-alert>
+
+        <div class="ai-tools-title">AI 调用记录（{{ aiResult.toolCalls.length }}）</div>
+        <div class="ai-tool-list">
+          <div v-for="(t, idx) in aiResult.toolCalls" :key="idx" class="ai-tool-card">
+            <div class="ai-tool-head">
+              <span class="ai-tool-name">{{ toolLabel(t.name) }}</span>
+              <el-tag :type="t.status === 'SUCCESS' ? 'success' : 'danger'" size="small">{{ t.status }}</el-tag>
+              <span class="ai-tool-duration">{{ t.durationMs }} ms</span>
+            </div>
+            <div class="ai-tool-args">{{ toolArgsText(t.arguments) }}</div>
+            <pre class="ai-tool-result">{{ JSON.stringify(t.result, null, 1) }}</pre>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="aiDialog = false">取消</el-button>
+        <el-button v-if="aiResult" type="primary" @click="applyAiDraft">载入画布（人工校对）</el-button>
+        <el-button type="primary" :loading="aiGenerating" @click="runAiGenerate">
+          {{ aiResult ? '重新生成' : '生成草稿' }}
+        </el-button>
+      </template>
+    </el-dialog>
 
     <!-- 干跑快照选择 -->
     <el-dialog v-model="dryRunDialog" title="选择人群快照（干跑）" width="420px">
@@ -1158,6 +1305,86 @@ onMounted(load)
   color: #606266;
   font-weight: 500;
   word-break: break-all;
+}
+.ai-result {
+  margin-top: 12px;
+}
+.ai-plan-summary {
+  font-size: 13px;
+  color: #303133;
+  background: #f4f4f5;
+  border-radius: 6px;
+  padding: 10px 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.ai-audience-alert {
+  margin-top: 10px;
+}
+.ai-alert-note {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #909399;
+}
+.ai-alert-actions {
+  margin-top: 6px;
+}
+.ai-tools-title {
+  font-weight: 600;
+  font-size: 13px;
+  margin: 12px 0 8px;
+}
+.ai-tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.ai-tool-card {
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.ai-tool-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.ai-tool-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+.ai-tool-duration {
+  font-size: 12px;
+  color: #909399;
+  margin-left: auto;
+}
+.ai-tool-args {
+  font-size: 12px;
+  color: #606266;
+  background: #fafafa;
+  border-radius: 4px;
+  padding: 4px 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin-bottom: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.ai-tool-result {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: #909399;
+  background: #fafafa;
+  border-radius: 4px;
+  padding: 4px 8px;
+  max-height: 140px;
+  overflow-y: auto;
 }
 .report-summary {
   margin-bottom: 14px;

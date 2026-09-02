@@ -1,5 +1,6 @@
 import { http } from './http'
 import type {
+  AiGenerateResponse,
   ApiResponse,
   DryRunRequest,
   DryRunResponse,
@@ -16,6 +17,12 @@ import type {
 /** GET /api/workflows —— 工作流列表（每业务 id 族最新可用行）。 */
 export async function listWorkflows(): Promise<WorkflowSummary[]> {
   const { data } = await http.get<ApiResponse<WorkflowSummary[]>>('/workflows')
+  return data.data
+}
+
+/** POST /api/workflows/ai-generate —— AI 创建：自然语言 → DAG 草稿（不落库，人工审核后保存）。 */
+export async function aiGenerate(prompt: string): Promise<AiGenerateResponse> {
+  const { data } = await http.post<ApiResponse<AiGenerateResponse>>('/workflows/ai-generate', { prompt })
   return data.data
 }
 

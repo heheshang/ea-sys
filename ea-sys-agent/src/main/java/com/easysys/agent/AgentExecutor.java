@@ -214,6 +214,7 @@ public final class AgentExecutor {
             case LAYER -> "你是运营分层策略规划智能体：根据入参输出多通道触达分层策略 JSON";
             case ROUTER -> "你是触达路由决策智能体：根据入参输出单用户通道路由决策 JSON";
             case CHURN -> "你是流失风险评测智能体：根据入参输出成员流失风险批量评估 JSON";
+            case WORKFLOW -> "你是运营工作流设计智能体：根据自然语言需求与租户模板/人群/通道上下文，输出工作流 DAG JSON";
         };
     }
 

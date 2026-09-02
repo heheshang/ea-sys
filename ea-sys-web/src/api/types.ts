@@ -69,6 +69,37 @@ export interface SaveWorkflowRequest {
   edges: WorkflowEdgeSpec[]
 }
 
+/** AI 创建工作流请求（AiGenerateRequest）。 */
+export interface AiGenerateRequest {
+  prompt: string
+}
+
+/** AI 工具调用记录（AiToolCallView：真实执行过的租户查询/生成步骤）。 */
+export interface AiToolCallView {
+  name: string
+  arguments: Record<string, unknown> | null
+  result: unknown
+  status: 'SUCCESS' | 'FAILED'
+  durationMs: number
+}
+
+/** 人群匹配提示（audienceHint）：matched=false 时引导去人群管理人工圈选。 */
+export interface AiAudienceHint {
+  matched: boolean
+  audienceId?: number
+  audienceName?: string
+  suggestedName?: string
+  note?: string
+}
+
+/** AI 创建响应：DAG 草稿（不落库）+ 工具时间线 + 计划摘要 + 人群提示。 */
+export interface AiGenerateResponse {
+  workflowDraft: SaveWorkflowRequest
+  toolCalls: AiToolCallView[]
+  planSummary: string
+  audienceHint: AiAudienceHint
+}
+
 /** 工作流视图（WorkflowView：画布 + 节点 + 边）。 */
 export interface WorkflowView {
   id: number

@@ -268,8 +268,7 @@ function nodeLabel(n: LiteNode): string {
 /** 条件分支模型：condition=null 为 else 兜底 */
 const edgeMode = computed<'else' | 'if'>(() => (condOf(selectedEdge.value) ? 'if' : 'else'))
 
-function setEdgeMode(mode: 'else' | 'if') {
-  const edge = selectedEdge.value
+function setEdgeModeOf(edge: LiteEdge | undefined, mode: 'else' | 'if') {
   if (!edge) return
   const d = edgeDataOf(edge)
   if (mode === 'else') {
@@ -280,12 +279,24 @@ function setEdgeMode(mode: 'else' | 'if') {
   edge.data = { ...d }
 }
 
-function updateEdgeCondition(value: ConditionRule) {
-  const edge = selectedEdge.value
+function setEdgeMode(mode: 'else' | 'if') {
+  setEdgeModeOf(selectedEdge.value, mode)
+}
+
+function updateEdgeConditionOf(edge: LiteEdge | undefined, value: ConditionRule) {
   if (!edge) return
   const d = edgeDataOf(edge)
   d.condition = value
   edge.data = { ...d }
+}
+
+function updateEdgeCondition(value: ConditionRule) {
+  updateEdgeConditionOf(selectedEdge.value, value)
+}
+
+/** 从某节点出发的出边（CONDITION 节点侧配置用） */
+function outEdgesOf(nodeKey: string): LiteEdge[] {
+  return liteEdges.value.filter((e) => e.source === nodeKey)
 }
 
 /* ---------- 模板 / 快照数据 ---------- */
@@ -626,9 +637,35 @@ onMounted(load)
               </el-form-item>
             </template>
 
-            <div v-else-if="selectedNode && nodeTypeOf(selectedNode) === 'CONDITION'" class="config-hint">
-              条件节点：出边可配置条件分支，最多一条无条件边作为兜底（else）。
-            </div>
+            <!-- CONDITION：出边分支配置（条件 / else 兜底） -->
+            <template v-else-if="selectedNode && nodeTypeOf(selectedNode) === 'CONDITION'">
+              <el-form-item label="出边分支">
+                <div class="cond-branches">
+                  <div v-for="e in outEdgesOf(selectedNode!.data.real.key)" :key="e.id" class="cond-branch">
+                    <div class="cond-branch-head">
+                      <span class="cond-branch-target">→ {{ e.target }}</span>
+                      <el-radio-group
+                        :model-value="condOf(e) ? 'if' : 'else'"
+                        size="small"
+                        @update:model-value="(v: string) => setEdgeModeOf(e, v as 'else' | 'if')"
+                      >
+                        <el-radio value="if">条件分支</el-radio>
+                        <el-radio value="else">else 兜底</el-radio>
+                      </el-radio-group>
+                    </div>
+                    <EdgeConditionEditor
+                      v-if="condOf(e)"
+                      :model-value="condOf(e) as ConditionRule"
+                      :root="true"
+                      @update:model-value="(v: ConditionRule) => updateEdgeConditionOf(e, v)"
+                    />
+                  </div>
+                  <div v-if="!outEdgesOf(selectedNode!.data.real.key).length" class="config-hint">
+                    该节点暂无出边，先拖线连接。
+                  </div>
+                </div>
+              </el-form-item>
+            </template>
             <div v-else class="config-hint">该节点无需配置。</div>
           </el-form>
         </template>
@@ -824,6 +861,32 @@ onMounted(load)
 }
 .cond-editor-wrap {
   width: 100%;
+}
+.cond-branches {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cond-branch {
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cond-branch-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.cond-branch-target {
+  font-size: 13px;
+  color: #606266;
+  font-weight: 500;
+  word-break: break-all;
 }
 .report-summary {
   margin-bottom: 14px;

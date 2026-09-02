@@ -6,15 +6,16 @@
  *  - VueFlow Edge.id = `${source}->${target}`；data.condition = 边条件 DSL（null = else 兜底）
  * 操作流：拖放/点选节点 → 连线 → 配置 → 保存 → 校验 → 发布 → 干跑（选 ready 快照）→ 报告。
  */
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { FullScreen, Aim } from '@element-plus/icons-vue'
 import { VueFlow, MarkerType, useVueFlow } from '@vue-flow/core'
 import type { Connection, Edge, Node } from '@vue-flow/core'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
 import dagre from '@dagrejs/dagre'
-import CanvasNode from '../components/canvas/CanvasNode.vue'
+import CanvasNode, { nodeWidthOf } from '../components/canvas/CanvasNode.vue'
 import EdgeConditionEditor from '../components/canvas/EdgeConditionEditor.vue'
 import {
   aiChat,
@@ -830,26 +831,58 @@ watch(
 function autoLayout() {
   const g = new dagre.graphlib.Graph()
   g.setDefaultEdgeLabel(() => ({}))
-  g.setGraph({ rankdir: 'LR', nodesep: 50, ranksep: 90 })
-  const W = 160
-  const H = 64
-  allNodes().forEach((n) => g.setNode(n.id, { width: W, height: H }))
+  g.setGraph({ rankdir: 'LR', nodesep: 60, ranksep: 110 })
+  const H = 68
+  allNodes().forEach((n) => {
+    const w = nodeWidthOf(nodeLabel(n))
+    g.setNode(n.id, { width: w, height: H })
+  })
   allEdges().forEach((e) => g.setEdge(e.source, e.target))
   dagre.layout(g)
   setNodes(
     allNodes().map((n) => {
+      const w = nodeWidthOf(nodeLabel(n))
       const p = g.node(n.id)
-      return { ...n, position: { x: p.x - W / 2, y: p.y - H / 2 } }
+      return { ...n, position: { x: p.x - w / 2, y: p.y - H / 2 } }
     }),
   )
   clearSelection()
+  fitView({ padding: 0.15 })
 }
 
-onMounted(load)
+/* ---------- 全屏展示 ---------- */
+
+const canvasPageRef = ref<HTMLElement>()
+const isFullscreen = ref(false)
+
+function onFullscreenChange() {
+  isFullscreen.value = document.fullscreenElement != null
+  nextTick(() => fitView({ padding: 0.15 }))
+}
+
+async function toggleFullscreen() {
+  try {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen()
+    } else {
+      await canvasPageRef.value?.requestFullscreen()
+    }
+  } catch {
+    ElMessage.warning('无法进入全屏（浏览器限制）')
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('fullscreenchange', onFullscreenChange)
+  load()
+})
+onUnmounted(() => {
+  document.removeEventListener('fullscreenchange', onFullscreenChange)
+})
 </script>
 
 <template>
-  <div class="canvas-page">
+  <div class="canvas-page" ref="canvasPageRef">
     <!-- 顶部工具条 -->
     <div class="toolbar">
       <div class="wf-meta">
@@ -863,6 +896,8 @@ onMounted(load)
       <div class="wf-actions">
         <el-button @click="router.push('/workflows')">返回列表</el-button>
         <el-button @click="autoLayout">自动布局</el-button>
+        <el-button :icon="Aim" @click="fitView({ padding: 0.15 })">居中</el-button>
+        <el-button :icon="FullScreen" @click="toggleFullscreen">{{ isFullscreen ? '退出全屏' : '全屏' }}</el-button>
         <el-button type="primary" :loading="saving" @click="save">保存</el-button>
         <el-button :loading="validating" @click="validate">校验</el-button>
         <el-button type="success" :loading="publishing" :disabled="status !== 'draft'" @click="publish">
@@ -1329,6 +1364,9 @@ onMounted(load)
   height: calc(100vh - 60px);
   display: flex;
   flex-direction: column;
+}
+.canvas-page:fullscreen {
+  height: 100vh;
 }
 .toolbar {
   display: flex;

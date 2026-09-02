@@ -201,6 +201,21 @@ export interface ExecutionSummary {
   finishedAt: string | null
 }
 
+/** 通道触达日志行（delivery_record）：真实下发的通道级记录。 */
+export interface DeliveryLog {
+  id: number
+  executionId: number
+  contactId: number
+  contactName: string | null
+  channel: string
+  templateId: number | null
+  content: string | null
+  channelMsgId: string | null
+  status: string
+  error: string | null
+  createdAt: string
+}
+
 /** 执行/干跑报告（DryRunResponse）。 */
 export interface DryRunResponse {
   executionId: number
@@ -212,6 +227,7 @@ export interface DryRunResponse {
   durationMs: number
   error: string | null
   nodes: NodeOutcome[]
+  deliveries: DeliveryLog[]
 }
 
 /** 计划校验单维度比对结果（PlanValidationView.Dimension）。 */

@@ -17,7 +17,8 @@ public record DryRunResponse(
         boolean dryRun,
         long durationMs,
         String error,
-        List<NodeOutcome> nodes) {
+        List<NodeOutcome> nodes,
+        List<DeliveryLogView> deliveries) {
 
     public record NodeOutcome(
             String key,
@@ -28,12 +29,12 @@ public record DryRunResponse(
             JsonNode output) {
     }
 
-    public static DryRunResponse from(AbstractDagExecutor.ExecutionReport r) {
+    public static DryRunResponse from(AbstractDagExecutor.ExecutionReport r, List<DeliveryLogView> deliveries) {
         List<NodeOutcome> outcomes = r.nodes().stream()
                 .map(n -> new NodeOutcome(n.nodeKey(), n.nodeType(), n.nodeName(), n.status(),
                         n.contacts(), n.output()))
                 .toList();
         return new DryRunResponse(r.executionId(), r.workflowId(), r.workflowVersion(), r.status(),
-                r.totalMembers(), r.dryRun(), r.durationMs(), r.error(), outcomes);
+                r.totalMembers(), r.dryRun(), r.durationMs(), r.error(), outcomes, deliveries);
     }
 }

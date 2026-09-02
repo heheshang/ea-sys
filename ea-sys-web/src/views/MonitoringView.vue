@@ -63,6 +63,14 @@ function fmtTime(iso: string | null | undefined): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
+function fmtTimeSec(iso: string | null | undefined): string {
+  if (!iso) return '-'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
 function statusType(status: string): 'success' | 'danger' | 'warning' | 'info' {
   if (status.startsWith('SUCCEEDED') || status === 'done') return 'success'
   if (status.startsWith('FAILED')) return 'danger'
@@ -173,6 +181,27 @@ function statusType(status: string): 'success' | 'danger' | 'warning' | 'info' {
               </template>
             </el-table-column>
           </el-table>
+
+          <h4 class="delivery-title">通道触达日志</h4>
+          <el-table v-if="(report.deliveries ?? []).length" :data="report.deliveries ?? []" size="small" border>
+            <el-table-column label="时间" width="150">
+              <template #default="{ row }">{{ fmtTimeSec(row.createdAt) }}</template>
+            </el-table-column>
+            <el-table-column prop="contactName" label="联系人" min-width="110" show-overflow-tooltip />
+            <el-table-column label="通道" width="80">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.channel === 'sms' ? 'success' : 'primary'">{{ row.channel }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="statusType(row.status)" size="small">{{ row.status }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="channelMsgId" label="消息ID" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="error" label="错误" min-width="140" show-overflow-tooltip />
+          </el-table>
+          <el-empty v-else description="无通道触达记录（全部被频率/幂等拦截或未下发）" :image-size="60" />
         </template>
         <el-empty v-else-if="!detailLoading" description="无报告数据" :image-size="80" />
       </div>
@@ -199,6 +228,11 @@ function statusType(status: string): 'success' | 'danger' | 'warning' | 'info' {
 }
 .report-summary {
   margin-bottom: 12px;
+}
+.delivery-title {
+  margin: 14px 0 8px;
+  font-size: 13px;
+  color: var(--el-text-color-primary, #303133);
 }
 .report-error {
   margin-top: 8px;

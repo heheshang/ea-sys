@@ -1,6 +1,7 @@
 package com.easysys.api.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.easysys.api.dto.workflow.DeliveryLogView;
 import com.easysys.api.dto.workflow.DryRunRequest;
 import com.easysys.api.dto.workflow.DryRunResponse;
 import com.easysys.api.dto.workflow.ExecutionSummaryView;
@@ -31,10 +32,12 @@ import com.easysys.common.tenant.TenantContext;
 import com.easysys.common.web.BizException;
 import com.easysys.common.web.ErrorCode;
 import com.easysys.engine.dag.DagValidator;
+import com.easysys.engine.entity.DeliveryRecord;
 import com.easysys.engine.entity.Execution;
 import com.easysys.engine.entity.Workflow;
 import com.easysys.engine.entity.WorkflowEdge;
 import com.easysys.engine.entity.WorkflowNode;
+import com.easysys.engine.mapper.DeliveryRecordMapper;
 import com.easysys.engine.mapper.ExecutionMapper;
 import com.easysys.engine.mapper.WorkflowEdgeMapper;
 import com.easysys.engine.mapper.WorkflowNodeMapper;
@@ -86,6 +89,7 @@ public class WorkflowService {
     private final ContactAttributeMapper attributeMapper;
     private final ContactTagMapper tagMapper;
     private final ValidationReportMapper validationReportMapper;
+    private final DeliveryRecordMapper deliveryRecordMapper;
     private final ObjectMapper json;
 
     public WorkflowService(WorkflowMapper workflowMapper, WorkflowNodeMapper nodeMapper,
@@ -97,6 +101,7 @@ public class WorkflowService {
                            AudienceSnapshotMemberMapper memberMapper, ContactMapper contactMapper,
                            ContactAttributeMapper attributeMapper, ContactTagMapper tagMapper,
                            ValidationReportMapper validationReportMapper,
+                           DeliveryRecordMapper deliveryRecordMapper,
                            ObjectMapper json) {
         this.workflowMapper = workflowMapper;
         this.nodeMapper = nodeMapper;
@@ -111,6 +116,7 @@ public class WorkflowService {
         this.memberMapper = memberMapper;
         this.contactMapper = contactMapper;
         this.validationReportMapper = validationReportMapper;
+        this.deliveryRecordMapper = deliveryRecordMapper;
         this.attributeMapper = attributeMapper;
         this.tagMapper = tagMapper;
         this.json = json;
@@ -305,7 +311,7 @@ public class WorkflowService {
         WorkflowSnapshot ws = canvasOf(wf);
         AbstractDagExecutor.ExecutionReport report = dryRunExecutor.execute(wf, ws.nodes, ws.edges,
                 req.audienceSnapshotId(), members);
-        return DryRunResponse.from(report);
+        return DryRunResponse.from(report, List.of());
     }
 
     /** 真实触达执行：与干跑同语义，ACTION 节点真实下发（治理/频率/幂等拦截计入 skipped）。 */
@@ -315,7 +321,7 @@ public class WorkflowService {
         WorkflowSnapshot ws = canvasOf(wf);
         AbstractDagExecutor.ExecutionReport report = workflowExecutor.execute(wf, ws.nodes, ws.edges,
                 req.audienceSnapshotId(), members);
-        return DryRunResponse.from(report);
+        return DryRunResponse.from(report, deliveriesOf(report.executionId()));
     }
 
     /** 单联系人画像上下文（事件/API 触发单用户入流）。调用方需已设 TenantContext。 */
@@ -455,13 +461,36 @@ public class WorkflowService {
         return new WorkflowSnapshot(nodes, edges);
     }
 
+    /** 通道触达日志：该执行实例的真实下发记录（delivery_record），按写入顺序；联系人名为外部 ID。 */
+    private List<DeliveryLogView> deliveriesOf(Long executionId) {
+        Long tenantId = TenantContext.require();
+        List<DeliveryRecord> rows = deliveryRecordMapper.selectList(
+                new LambdaQueryWrapper<DeliveryRecord>()
+                        .eq(DeliveryRecord::getTenantId, tenantId)
+                        .eq(DeliveryRecord::getExecutionId, executionId)
+                        .orderByAsc(DeliveryRecord::getId));
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, String> names = new HashMap<>();
+        for (Contact c : contactMapper.selectBatchIds(
+                rows.stream().map(DeliveryRecord::getContactId).distinct().toList())) {
+            names.put(c.getId(), c.getExternalId());
+        }
+        return rows.stream()
+                .map(r -> new DeliveryLogView(r.getId(), r.getExecutionId(), r.getContactId(),
+                        names.get(r.getContactId()), r.getChannel(), r.getTemplateId(), r.getContent(),
+                        r.getChannelMsgId(), r.getStatus(), r.getError(), r.getCreatedAt()))
+                .toList();
+    }
+
     /** 按 executionId 查询执行/干跑报告。 */
     public DryRunResponse report(Long executionId) {
         Execution e = executionMapper.selectById(executionId);
         if (e == null) {
             throw new BizException(ErrorCode.NOT_FOUND, "执行不存在: " + executionId);
         }
-        return DryRunResponse.from(dryRunExecutor.report(executionId));
+        return DryRunResponse.from(dryRunExecutor.report(executionId), deliveriesOf(executionId));
     }
 
     /** 执行历史：干跑/真实执行记录列表（按 executionId 倒序；workflowId/dryRun 可选筛选）。 */

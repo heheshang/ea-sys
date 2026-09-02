@@ -79,9 +79,19 @@ public abstract class AbstractDagExecutor {
      * 执行一次 DAG：dryRun=true 时 ACTION 仅估算人数（DryRunExecutor），
      * false 时真实渲染模板并按通道下发（WorkflowExecutor）。
      */
+    /** 手动触达执行（状态机共用，triggerType=MANUAL）。 */
     @Transactional
     public ExecutionReport execute(Workflow workflow, List<WorkflowNode> nodes, List<WorkflowEdge> edges,
                                    Long audienceSnapshotId, List<MemberContext> members, boolean dryRun) {
+        return execute(workflow, nodes, edges, audienceSnapshotId, members, dryRun,
+                TriggerType.MANUAL.name(), null);
+    }
+
+    /** 显式触发执行（定时/事件/API/手动统一入口）。triggerPayload 记录触发上下文（调度时间/事件载荷等）。 */
+    @Transactional
+    public ExecutionReport execute(Workflow workflow, List<WorkflowNode> nodes, List<WorkflowEdge> edges,
+                                   Long audienceSnapshotId, List<MemberContext> members, boolean dryRun,
+                                   String triggerType, String triggerPayload) {
         Instant startedAt = Instant.now();
         Long tenantId = TenantContext.require();
         Long workflowId = workflow.getRefId() != null ? workflow.getRefId() : workflow.getId();
@@ -91,7 +101,8 @@ public abstract class AbstractDagExecutor {
         execution.setTenantId(tenantId);
         execution.setWorkflowId(workflowId);
         execution.setWorkflowVersion(version);
-        execution.setTriggerType(TriggerType.MANUAL.name());
+        execution.setTriggerType(triggerType != null ? triggerType : TriggerType.MANUAL.name());
+        execution.setTriggerPayload(triggerPayload);
         execution.setAudienceSnapshotId(audienceSnapshotId);
         execution.setDryRun(dryRun);
         execution.setStatus(ExecutionStatus.RUNNING.name());

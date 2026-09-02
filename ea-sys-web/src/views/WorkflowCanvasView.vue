@@ -243,6 +243,34 @@ function nodeConfig(n: LiteNode): Record<string, unknown> {
   return (realOf(n).config ?? {}) as Record<string, unknown>
 }
 
+/** 事件过滤 JSON 编辑器：合法 JSON 提交入 config，非法暂存原始文本等待修正。 */
+const eventFilterDraft = ref<string | null>(null)
+const eventFilterText = computed<string>({
+  get: () => {
+    if (eventFilterDraft.value != null) return eventFilterDraft.value
+    if (!selectedNode.value) return ''
+    const f = nodeConfig(selectedNode.value).eventFilter
+    return f ? JSON.stringify(f, null, 2) : ''
+  },
+  set: (v: string) => {
+    const trimmed = v.trim()
+    if (!trimmed) {
+      updateNodeConfig('eventFilter', null)
+      eventFilterDraft.value = null
+      return
+    }
+    try {
+      updateNodeConfig('eventFilter', JSON.parse(trimmed))
+      eventFilterDraft.value = null
+    } catch {
+      eventFilterDraft.value = v
+    }
+  },
+})
+function setEventFilterText(v: string) {
+  eventFilterText.value = v
+}
+
 function updateNodeName(value: string) {
   const node = selectedNode.value
   if (!node) return
@@ -667,6 +695,72 @@ onMounted(load)
                 </div>
               </el-form-item>
             </template>
+            <!-- TRIGGER：触发方式（定时 / 行为事件 / API / 手动） -->
+            <template v-else-if="selectedNode && nodeTypeOf(selectedNode) === 'TRIGGER'">
+              <el-form-item label="触发方式">
+                <el-select
+                  :model-value="selectedNode ? (nodeConfig(selectedNode).triggerType as string ?? 'MANUAL') : 'MANUAL'"
+                  style="width: 100%"
+                  @update:model-value="(v: string) => updateNodeConfig('triggerType', v)"
+                >
+                  <el-option value="MANUAL" label="手动触达" />
+                  <el-option value="SCHEDULED" label="定时触达（cron 圈选）" />
+                  <el-option value="EVENT" label="行为事件触发" />
+                  <el-option value="API" label="API 触发（外部系统入流）" />
+                </el-select>
+              </el-form-item>
+
+              <template v-if="nodeConfig(selectedNode).triggerType === 'SCHEDULED'">
+                <el-form-item label="人群">
+                  <el-select
+                    :model-value="selectedNode ? nodeConfig(selectedNode).audienceId : ''"
+                    placeholder="选择圈选人群"
+                    style="width: 100%"
+                    @update:model-value="(v: number) => updateNodeConfig('audienceId', v)"
+                  >
+                    <el-option v-for="a in audiences" :key="a.id" :label="a.name" :value="a.id" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="cron">
+                  <el-input
+                    :model-value="selectedNode ? (nodeConfig(selectedNode).cron as string ?? '') : ''"
+                    placeholder="Quartz 表达式，如 0 30 9 * * ?（每天 09:30）"
+                    @update:model-value="(v: string) => updateNodeConfig('cron', v)"
+                  />
+                </el-form-item>
+                <el-form-item label="时区">
+                  <el-input
+                    :model-value="selectedNode ? (nodeConfig(selectedNode).timezone as string ?? 'Asia/Shanghai') : 'Asia/Shanghai'"
+                    placeholder="Asia/Shanghai"
+                    @update:model-value="(v: string) => updateNodeConfig('timezone', v)"
+                  />
+                </el-form-item>
+              </template>
+
+              <template v-else-if="nodeConfig(selectedNode).triggerType === 'EVENT'">
+                <el-form-item label="事件名">
+                  <el-input
+                    :model-value="selectedNode ? (nodeConfig(selectedNode).eventName as string ?? '') : ''"
+                    placeholder="如 order_paid / visit"
+                    @update:model-value="(v: string) => updateNodeConfig('eventName', v)"
+                  />
+                </el-form-item>
+                <el-form-item label="事件过滤">
+                  <el-input
+                    type="textarea"
+                    :rows="4"
+                    :model-value="eventFilterText"
+                    placeholder='DSL JSON，如 {"op":"AND","items":[{"field":"event.amount","op":"gte","value":100}]}'
+                    @update:model-value="setEventFilterText"
+                  />
+                </el-form-item>
+              </template>
+
+              <template v-else>
+                <div class="config-hint">手动触达：从首页人群列表发起；API 触发由外部系统按进化流 ID 携带单用户载荷调用接口。</div>
+              </template>
+            </template>
+
             <div v-else class="config-hint">该节点无需配置。</div>
           </el-form>
         </template>

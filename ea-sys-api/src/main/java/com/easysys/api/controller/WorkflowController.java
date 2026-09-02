@@ -1,5 +1,6 @@
 package com.easysys.api.controller;
 
+import com.easysys.api.dto.workflow.ApiTriggerRequest;
 import com.easysys.api.dto.workflow.DryRunRequest;
 import com.easysys.api.dto.workflow.DryRunResponse;
 import com.easysys.api.dto.workflow.ExecutionSummaryView;
@@ -9,6 +10,7 @@ import com.easysys.api.dto.workflow.WorkflowSnapshotListView;
 import com.easysys.api.dto.workflow.WorkflowSummaryView;
 import com.easysys.api.dto.workflow.WorkflowVersionView;
 import com.easysys.api.dto.workflow.WorkflowView;
+import com.easysys.api.service.TriggerService;
 import com.easysys.api.service.WorkflowService;
 import com.easysys.common.web.ApiResponse;
 import jakarta.validation.Valid;
@@ -31,9 +33,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class WorkflowController {
 
     private final WorkflowService workflowService;
+    private final TriggerService triggerService;
 
-    public WorkflowController(WorkflowService workflowService) {
+    public WorkflowController(WorkflowService workflowService, TriggerService triggerService) {
         this.workflowService = workflowService;
+        this.triggerService = triggerService;
     }
 
     /** 工作流列表：每业务 id 族最新可用行。 */
@@ -99,6 +103,14 @@ public class WorkflowController {
     public ApiResponse<DryRunResponse> execute(@PathVariable Long id,
                                                @Valid @RequestBody DryRunRequest req) {
         return ApiResponse.ok(workflowService.execute(id, req));
+    }
+
+    /** API 触发：外部系统按 workflowId 携带单用户载荷入流（triggerType=API）。 */
+    @PostMapping("/{id}/triggers/api")
+    public ApiResponse<Void> apiTrigger(@PathVariable Long id,
+                                        @Valid @RequestBody ApiTriggerRequest req) {
+        triggerService.fireApi(id, req.contactId(), req.payload());
+        return ApiResponse.ok(null);
     }
 
     /** 按执行实例查询干跑报告（执行后重查）。 */

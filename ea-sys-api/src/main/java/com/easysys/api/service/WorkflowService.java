@@ -37,6 +37,8 @@ import com.easysys.engine.mapper.ExecutionMapper;
 import com.easysys.engine.mapper.WorkflowEdgeMapper;
 import com.easysys.engine.mapper.WorkflowNodeMapper;
 import com.easysys.engine.mapper.WorkflowMapper;
+import com.easysys.engine.model.TriggerConfig;
+import com.easysys.engine.model.TriggerType;
 import com.easysys.engine.rule.ConditionCompiler;
 import com.easysys.engine.service.AbstractDagExecutor;
 import com.easysys.engine.service.DryRunExecutor;
@@ -305,6 +307,78 @@ public class WorkflowService {
         return DryRunResponse.from(report);
     }
 
+    /** 单联系人画像上下文（事件/API 触发单用户入流）。调用方需已设 TenantContext。 */
+    public AbstractDagExecutor.MemberContext memberContextOf(Long contactId) {
+        Contact c = contactMapper.selectById(contactId);
+        if (c == null) {
+            throw new BizException(ErrorCode.NOT_FOUND, "联系人不存在: " + contactId);
+        }
+        Map<String, Object> ctx = new LinkedHashMap<>();
+        for (ContactAttribute a : attributeMapper.selectList(
+                new LambdaQueryWrapper<ContactAttribute>().eq(ContactAttribute::getContactId, contactId))) {
+            ctx.put(a.getKey(), scalar(a.getValue()));
+        }
+        putIfNotNull(ctx, "status", c.getStatus());
+        putIfNotNull(ctx, "phone", c.getPhone());
+        putIfNotNull(ctx, "email", c.getEmail());
+        putIfNotNull(ctx, "externalId", c.getExternalId());
+        ctx.put("suppressedChannels", suppressedChannels(c.getSuppression()));
+        List<String> tags = tagMapper.selectList(
+                        new LambdaQueryWrapper<ContactTag>().eq(ContactTag::getContactId, contactId))
+                .stream().map(ContactTag::getTag).toList();
+        ctx.put("tags", tags);
+        return new AbstractDagExecutor.MemberContext(contactId, ctx, Map.of(), Map.of());
+    }
+
+    /**
+     * 定时触发执行：复用已圈选就绪快照批量执行。
+     * 调度器负责圈选 + Redis 防双跑；此处仅校验并落 Execution(triggerType=SCHEDULED)。
+     * 画布非法（已发布后被改坏）→ 静默跳过，调度不阻断。
+     */
+    @Transactional
+    public void executeScheduled(Workflow wf, TriggerConfig tc, Long snapshotId, Instant fireTime) {
+        if (!validateRows(wf).isEmpty()) {
+            return;
+        }
+        AudienceSnapshot snap = snapshotMapper.selectById(snapshotId);
+        if (snap == null || !"ready".equals(snap.getStatus())) {
+            return;
+        }
+        WorkflowSnapshot ws = canvasOf(wf);
+        List<AbstractDagExecutor.MemberContext> members = loadMembers(snap);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("audienceId", tc.audienceId());
+        payload.put("cron", tc.cron());
+        payload.put("timezone", tc.timezone());
+        payload.put("fireTime", fireTime.toString());
+        workflowExecutor.execute(wf, ws.nodes, ws.edges, snapshotId, members, false,
+                TriggerType.SCHEDULED.name(), payloadJson(payload));
+    }
+
+    /** 单用户触发执行（EVENT/API）：入流载荷置于 event 映射，条件节点可按 event.* 路由。 */
+    @Transactional
+    public void executeSingle(Workflow wf, Long contactId, Map<String, Object> eventPayload, String triggerType) {
+        if (!validateRows(wf).isEmpty()) {
+            return;
+        }
+        WorkflowSnapshot ws = canvasOf(wf);
+        AbstractDagExecutor.MemberContext base = memberContextOf(contactId);
+        Map<String, Object> event = eventPayload == null ? Map.of() : eventPayload;
+        AbstractDagExecutor.MemberContext mc =
+                new AbstractDagExecutor.MemberContext(base.contactId(), base.contact(), base.history(), event);
+        workflowExecutor.execute(wf, ws.nodes, ws.edges, null, List.of(mc), false,
+                triggerType, payloadJson(event));
+    }
+
+    /** triggerPayload 序列化：失败 → null（调度/事件路径不因载荷序列化失败而中断）。 */
+    private String payloadJson(Map<String, Object> payload) {
+        try {
+            return json.writeValueAsString(payload);
+        } catch (JsonProcessingException ex) {
+            return null;
+        }
+    }
+
     /** 干跑/真实执行的公共前置校验：已发布版本 + 快照就绪，装配成员画像。 */
     private List<AbstractDagExecutor.MemberContext> executionPreamble(Long id, DryRunRequest req, String action) {
         Workflow wf = publishedRow(id);
@@ -446,6 +520,21 @@ public class WorkflowService {
                 long templateId = n.config() == null ? 0 : n.config().path("templateId").asLong(0);
                 if (channel == null || channel.isBlank() || templateId <= 0) {
                     errors.add("ACTION 节点 " + n.key() + " 缺少 channel/templateId 配置");
+                }
+            }
+            if ("TRIGGER".equals(n.type())) {
+                TriggerConfig tc = TriggerConfig.of(n.config());
+                if (TriggerType.of(tc.triggerType()) == null) {
+                    errors.add("TRIGGER 节点 " + n.key() + " triggerType 非法: " + tc.triggerType());
+                }
+                if (tc.isScheduled() && (tc.cron() == null || tc.cron().isBlank())) {
+                    errors.add("TRIGGER 节点 " + n.key() + " 定时触发缺少 cron 配置");
+                }
+                if (tc.isScheduled() && tc.audienceId() == null) {
+                    errors.add("TRIGGER 节点 " + n.key() + " 定时触发缺少 audienceId 配置");
+                }
+                if (tc.isEvent() && (tc.eventName() == null || tc.eventName().isBlank())) {
+                    errors.add("TRIGGER 节点 " + n.key() + " 事件触发缺少 eventName 配置");
                 }
             }
         }

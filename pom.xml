@@ -33,6 +33,7 @@
     <jjwt.version>0.12.6</jjwt.version>
     <redisson.version>3.52.0</redisson.version>
     <agentscope.version>2.0.2</agentscope.version>
+    <quartz.version>2.3.2</quartz.version>
   </properties>
 
   <dependencyManagement>
@@ -96,6 +97,11 @@
         <groupId>org.redisson</groupId>
         <artifactId>redisson-spring-boot-starter</artifactId>
         <version>${redisson.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.quartz-scheduler</groupId>
+        <artifactId>quartz</artifactId>
+        <version>${quartz.version}</version>
       </dependency>
       <dependency>
         <groupId>io.agentscope</groupId>

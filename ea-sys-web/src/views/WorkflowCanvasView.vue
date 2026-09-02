@@ -1,7 +1,842 @@
 <script setup lang="ts">
-// M2：DAG 编排画布（Vue Flow）——建设中。
+/**
+ * M2：DAG 编排画布。
+ * Vue Flow 画布 ↔ 后端 SaveWorkflowRequest 双向映射：
+ *  - VueFlow Node.id = 后端 node.key；position = {x,y}；data.real = WorkflowNodeSpec（除 position）
+ *  - VueFlow Edge.id = `${source}->${target}`；data.condition = 边条件 DSL（null = else 兜底）
+ * 操作流：拖放/点选节点 → 连线 → 配置 → 保存 → 校验 → 发布 → 干跑（选 ready 快照）→ 报告。
+ */
+import { computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { VueFlow, MarkerType, useVueFlow } from '@vue-flow/core'
+import type { Connection, Edge, Node } from '@vue-flow/core'
+import '@vue-flow/core/dist/style.css'
+import '@vue-flow/core/dist/theme-default.css'
+import dagre from '@dagrejs/dagre'
+import CanvasNode from '../components/canvas/CanvasNode.vue'
+import EdgeConditionEditor from '../components/canvas/EdgeConditionEditor.vue'
+import {
+  createWorkflow,
+  dryRunWorkflow,
+  getWorkflow,
+  publishWorkflow,
+  updateWorkflow,
+  validateWorkflow,
+} from '../api/workflow'
+import { listTemplates } from '../api/template'
+import { listAudiences, listSnapshots } from '../api/audience'
+import type {
+  Audience,
+  AudienceSnapshot,
+  ConditionRule,
+  DryRunResponse,
+  SaveWorkflowRequest,
+  Template,
+  ValidationResponse,
+  WorkflowNodeSpec,
+  WorkflowNodeType,
+} from '../api/types'
+
+const route = useRoute()
+const router = useRouter()
+
+const workflowId = computed(() => (route.params.id ? Number(route.params.id) : null))
+
+/* ---------- 画布状态 ---------- */
+
+/**
+ * Vue Flow 的 Node/Edge 是联合类型且部分字段可选，精确泛型会引发深度实例化。
+ * 数组保留库默认类型，业务访问统一走 cast 辅助（data 在 push/load 时总是写入）。
+ */
+type CanvasNodeData = { real: WorkflowNodeSpec }
+type CanvasEdgeData = { condition: ConditionRule | null }
+
+const nodes = ref<Node[]>([])
+const edges = ref<Edge[]>([])
+const { screenToFlowCoordinate, fitView } = useVueFlow()
+
+function realOf(n: LiteNode): WorkflowNodeSpec {
+  return n.data.real
+}
+function condOf(e: LiteEdge | undefined): ConditionRule | null {
+  return (e?.data.condition ?? null) as ConditionRule | null
+}
+function dataOf(n: LiteNode): CanvasNodeData {
+  return n.data
+}
+function edgeDataOf(e: LiteEdge): CanvasEdgeData {
+  return e.data
+}
+
+const nodeTypes = { canvas: CanvasNode }
+
+/* ---------- 工具栏状态 ---------- */
+
+const name = ref('')
+const description = ref('')
+const status = ref<'draft' | 'published' | 'archived' | ''>('')
+const version = ref(0)
+const saving = ref(false)
+const validating = ref(false)
+const publishing = ref(false)
+
+const templates = ref<Template[]>([])
+const snapshots = ref<AudienceSnapshot[]>([])
+const audiences = ref<Audience[]>([])
+const dryRunAudienceId = ref<number | null>(null)
+const reportVisible = ref(false)
+
+/* 节点面板（后端 WORKFLOW 节点类型；AGENT_SPLIT 属 M3，面板不开放） */
+const PALETTE: Array<{ type: WorkflowNodeType; label: string }> = [
+  { type: 'TRIGGER', label: '触发' },
+  { type: 'CONDITION', label: '条件' },
+  { type: 'ACTION', label: '动作' },
+  { type: 'UPDATE', label: '更新' },
+  { type: 'DELAY', label: '延时' },
+  { type: 'END', label: '结束' },
+]
+
+const selectedKind = ref<'node' | 'edge' | null>(null)
+const selectedId = ref<string>('')
+
+/**
+ * 业务视图类型：覆盖画布操作所需的全部字段，避开 Vue Flow Node/Edge 联合泛型的深度实例化。
+ * 库的 Node/Edge 结构上可赋值给 Lite 类型（id/position/source/target/data 齐备）。
+ */
+type LiteNode = { id: string; type?: string; position: { x: number; y: number }; data: CanvasNodeData }
+type LiteEdge = { id: string; source: string; target: string; type?: string; markerEnd?: { type: string }; data: CanvasEdgeData }
+const liteNodes = computed(() => nodes.value as unknown as LiteNode[])
+const liteEdges = computed(() => edges.value as unknown as LiteEdge[])
+/** 业务读写一律走 Lite 视图；v-model 绑定仍用原始 ref。 */
+function allNodes(): LiteNode[] {
+  return nodes.value as unknown as LiteNode[]
+}
+function allEdges(): LiteEdge[] {
+  return edges.value as unknown as LiteEdge[]
+}
+function setNodes(v: LiteNode[]) {
+  nodes.value = v as unknown as Node[]
+}
+function setEdges(v: LiteEdge[]) {
+  edges.value = v as unknown as Edge[]
+}
+
+const selectedNode = computed(() =>
+  selectedKind.value === 'node' ? liteNodes.value.find((n) => n.id === selectedId.value) : undefined,
+)
+const selectedEdge = computed(() =>
+  selectedKind.value === 'edge' ? liteEdges.value.find((e) => e.id === selectedId.value) : undefined,
+)
+
+const NODE_KEY_COUNTERS: Record<WorkflowNodeType, number> = {
+  TRIGGER: 0, CONDITION: 0, AGENT_SPLIT: 0, DELAY: 0, ACTION: 0, UPDATE: 0, END: 0,
+}
+
+function nextKey(type: WorkflowNodeType): string {
+  NODE_KEY_COUNTERS[type] += 1
+  return `${type.toLowerCase()}_${NODE_KEY_COUNTERS[type]}`
+}
+
+/** 从面板添加节点（画布可视区中心偏右下落，级联偏移）。 */
+async function addFromPalette(type: WorkflowNodeType) {
+  const pos = screenToFlowCoordinate({ x: window.innerWidth / 2, y: window.innerHeight / 2 })
+  let key = nextKey(type)
+  while (nodes.value.some((n) => n.id === key)) key = nextKey(type)
+  const offset = nodes.value.length * 24
+  nodes.value.push({
+    id: key,
+    type: 'canvas',
+    position: { x: pos.x - 80 + offset, y: pos.y - 28 + offset },
+    data: { real: { key, type, name: '', config: {}, position: null } },
+  })
+  selectNode(key)
+}
+
+/* ---------- 选中 ---------- */
+
+function selectNode(id: string) {
+  selectedKind.value = 'node'
+  selectedId.value = id
+}
+function selectEdge(id: string) {
+  selectedKind.value = 'edge'
+  selectedId.value = id
+}
+function clearSelection() {
+  selectedKind.value = null
+  selectedId.value = ''
+}
+
+function deleteSelected() {
+  if (selectedKind.value === 'node') {
+    const id = selectedId.value
+    const dependents = allEdges().filter((e) => e.source === id || e.target === id)
+    if (dependents.length) {
+      ElMessage.warning('请先断开该节点的连线')
+      return
+    }
+    setNodes(allNodes().filter((n) => n.id !== id))
+    clearSelection()
+  } else if (selectedKind.value === 'edge') {
+    setEdges(allEdges().filter((e) => e.id !== selectedId.value))
+    clearSelection()
+  }
+}
+
+/* ---------- 连线 ---------- */
+
+const CHANNEL_IDS = ['sms', 'email']
+
+function canConnect(conn: Connection): boolean {
+  if (!conn.source || !conn.target) return false
+  const src = allNodes().find((n) => n.id === conn.source)
+  const tgt = allNodes().find((n) => n.id === conn.target)
+  if (!src || !tgt) return false
+  const srcType = (realOf(src).type as WorkflowNodeType) ?? 'END'
+  const tgtType = (realOf(tgt).type as WorkflowNodeType) ?? 'TRIGGER'
+  if (srcType === 'END') {
+    ElMessage.warning('END 节点不能有出边')
+    return false
+  }
+  if (tgtType === 'TRIGGER') {
+    ElMessage.warning('TRIGGER 节点不能有入边')
+    return false
+  }
+  if (allEdges().some((e) => e.source === conn.source && e.target === conn.target)) {
+    ElMessage.warning('两点之间已有连线')
+    return false
+  }
+  if (srcType !== 'CONDITION' && srcType !== 'AGENT_SPLIT') {
+    if (allEdges().some((e) => e.source === conn.source)) {
+      ElMessage.warning('该节点已有一条出边（仅 CONDITION 可多路分流）')
+      return false
+    }
+  }
+  if (conn.source === conn.target) {
+    ElMessage.warning('不能自连')
+    return false
+  }
+  return true
+}
+
+function onConnect(conn: Connection) {
+  if (!canConnect(conn)) return
+  edges.value.push({
+    id: `${conn.source}->${conn.target}`,
+    source: conn.source!,
+    target: conn.target!,
+    type: 'smoothstep',
+    markerEnd: { type: MarkerType.ArrowClosed },
+    data: { condition: null },
+  })
+}
+
+/* ---------- 节点配置 ---------- */
+
+function nodeTypeOf(n: LiteNode): WorkflowNodeType {
+  return (realOf(n).type as WorkflowNodeType) ?? 'END'
+}
+
+function nodeConfig(n: LiteNode): Record<string, unknown> {
+  return (realOf(n).config ?? {}) as Record<string, unknown>
+}
+
+function updateNodeName(value: string) {
+  const node = selectedNode.value
+  if (!node) return
+  const d = dataOf(node)
+  d.real.name = value
+  node.data = { ...d }
+}
+
+function updateNodeConfig(k: string, value: unknown) {
+  const node = selectedNode.value
+  if (!node) return
+  const d = dataOf(node)
+  const cfg = (d.real.config ?? {}) as Record<string, unknown>
+  if (value === null || value === undefined || value === '') delete cfg[k]
+  else cfg[k] = value
+  d.real.config = cfg
+  node.data = { ...d }
+}
+
+function nodeLabel(n: LiteNode): string {
+  return realOf(n).name?.trim() || PALETTE.find((p) => p.type === nodeTypeOf(n))?.label || nodeTypeOf(n)
+}
+
+/** 条件分支模型：condition=null 为 else 兜底 */
+const edgeMode = computed<'else' | 'if'>(() => (condOf(selectedEdge.value) ? 'if' : 'else'))
+
+function setEdgeMode(mode: 'else' | 'if') {
+  const edge = selectedEdge.value
+  if (!edge) return
+  const d = edgeDataOf(edge)
+  if (mode === 'else') {
+    d.condition = null
+  } else {
+    d.condition = d.condition ?? { op: 'AND', items: [{ field: 'event.channel', op: 'equals', value: '' }] }
+  }
+  edge.data = { ...d }
+}
+
+function updateEdgeCondition(value: ConditionRule) {
+  const edge = selectedEdge.value
+  if (!edge) return
+  const d = edgeDataOf(edge)
+  d.condition = value
+  edge.data = { ...d }
+}
+
+/* ---------- 模板 / 快照数据 ---------- */
+
+async function loadTemplates() {
+  templates.value = await listTemplates()
+}
+
+async function loadAudiences() {
+  const page = await listAudiences(1, 100)
+  audiences.value = page.records
+}
+
+async function selectAudience(id: number) {
+  snapshots.value = []
+  if (!id) return
+  const page = await listSnapshots(id, 1, 100)
+  // 干跑需要 ready 快照
+  snapshots.value = page.records.filter((s) => s.status === 'ready')
+}
+
+/* ---------- 加载 / 保存 ---------- */
+
+async function load() {
+  if (!workflowId.value) {
+    // 新画布也要加载模板，供 ACTION 节点配置下拉使用
+    await loadTemplates()
+    return
+  }
+  const wf = await getWorkflow(workflowId.value)
+  // 播种节点 key 计数器，避免新节点与已加载节点重名
+  wf.nodes.forEach((spec) => {
+    const m = /^(TRIGGER|CONDITION|AGENT_SPLIT|DELAY|ACTION|UPDATE|END)_(\d+)$/.exec(spec.key)
+    if (m) {
+      const t = m[1] as WorkflowNodeType
+      const n = Number(m[2])
+      if (n > NODE_KEY_COUNTERS[t]) NODE_KEY_COUNTERS[t] = n
+    }
+  })
+  name.value = wf.name
+  description.value = wf.description
+  status.value = wf.status
+  version.value = wf.version
+  setNodes(
+    wf.nodes.map((spec): LiteNode => ({
+      id: spec.key,
+      type: 'canvas',
+      position: spec.position && !Number.isNaN(spec.position.x) ? spec.position : { x: 120, y: 80 },
+      data: { real: { ...spec, position: null } },
+    })),
+  )
+  setEdges(
+    (wf.edges ?? []).map((spec): LiteEdge => ({
+      id: `${spec.source}->${spec.target}`,
+    source: spec.source,
+    target: spec.target,
+      type: 'smoothstep',
+      markerEnd: { type: MarkerType.ArrowClosed },
+      data: { condition: spec.condition ?? null },
+    })),
+  )
+  // 无位置数据 → 自动布局（dagre，LR 拓扑，覆盖手工空 position）
+  const positioned = nodes.value.some((n) => n.position.x !== 120 || n.position.y !== 80)
+  if (!positioned && nodes.value.length > 0) {
+    setTimeout(autoLayout, 0)
+  }
+  await loadTemplates()
+  fitView({ padding: 0.15 })
+}
+
+function buildRequest(): SaveWorkflowRequest {
+  return {
+    name: name.value.trim(),
+    description: description.value.trim() || undefined,
+    nodes: allNodes().map((n) => {
+      const real = realOf(n)
+      return {
+        key: real.key,
+        type: real.type,
+        name: real.name?.trim() || undefined,
+        config: (real.config && Object.keys(real.config).length ? real.config : null) ?? null,
+        position: { x: Math.round(n.position.x), y: Math.round(n.position.y) },
+      }
+    }),
+    edges: allEdges().map((e) => ({
+      source: e.source,
+      target: e.target,
+      condition: condOf(e),
+    })),
+  }
+}
+
+/** 持久化：已存则覆盖当前行；未存则新建并跳转。返回最终业务 id。 */
+async function saveOnce(): Promise<number | null> {
+  if (!name.value.trim()) {
+    ElMessage.warning('请填写工作流名称')
+    return null
+  }
+  saving.value = true
+  try {
+    const req = buildRequest()
+    let id = workflowId.value
+    if (id != null) {
+      const wf = await updateWorkflow(id, req)
+      status.value = wf.status
+      version.value = wf.version
+    } else {
+      const wf = await createWorkflow(req)
+      id = wf.id
+      router.replace(`/canvas/${id}`)
+      status.value = wf.status
+      version.value = wf.version
+    }
+    await loadTemplates()
+    return id
+  } catch (e) {
+    ElMessage.error((e as Error).message || '保存失败')
+    return null
+  } finally {
+    saving.value = false
+  }
+}
+
+async function save() {
+  const id = await saveOnce()
+  if (id != null) {
+    ElMessage.success('已保存')
+  }
+}
+
+async function validate() {
+  const id = await saveOnce()
+  if (id == null) return
+  validating.value = true
+  try {
+    const res: ValidationResponse = await validateWorkflow(id)
+    if (res.valid) {
+      ElMessage.success('校验通过')
+    } else {
+      ElMessageBox.alert(res.errors.map((e) => `<div>${e}</div>`).join(''), '校验未通过（点击关闭后修改画布）', {
+        type: 'error',
+        dangerouslyUseHTMLString: true,
+      })
+    }
+  } catch (e) {
+    ElMessage.error((e as Error).message || '校验失败')
+  } finally {
+    validating.value = false
+  }
+}
+
+async function publish() {
+  const id = await saveOnce()
+  if (id == null) return
+  try {
+    publishing.value = true
+    const wf = await publishWorkflow(id)
+    status.value = wf.status
+    version.value = wf.version
+    ElMessage.success(`已发布 v${wf.version}`)
+  } catch (e) {
+    ElMessage.error((e as Error).message || '发布失败')
+  } finally {
+    publishing.value = false
+  }
+}
+
+/* ---------- 干跑 ---------- */
+
+const dryRunDialog = ref(false)
+const dryRunSnapshotId = ref<number | null>(null)
+const report = ref<DryRunResponse | null>(null)
+
+async function openDryRun() {
+  if (!workflowId.value) return
+  await loadAudiences()
+  dryRunAudienceId.value = null
+  dryRunSnapshotId.value = null
+  snapshots.value = []
+  dryRunDialog.value = true
+}
+
+async function runDryRun() {
+  if (!dryRunSnapshotId.value) {
+    ElMessage.warning('请选择人群快照')
+    return
+  }
+  try {
+    report.value = await dryRunWorkflow(workflowId.value!, { audienceSnapshotId: dryRunSnapshotId.value })
+    dryRunDialog.value = false
+    reportVisible.value = true
+  } catch (e) {
+    ElMessage.error((e as Error).message || '干跑失败')
+  }
+}
+
+/* ---------- 自动布局 ---------- */
+
+function autoLayout() {
+  const g = new dagre.graphlib.Graph()
+  g.setDefaultEdgeLabel(() => ({}))
+  g.setGraph({ rankdir: 'LR', nodesep: 50, ranksep: 90 })
+  const W = 160
+  const H = 64
+  allNodes().forEach((n) => g.setNode(n.id, { width: W, height: H }))
+  allEdges().forEach((e) => g.setEdge(e.source, e.target))
+  dagre.layout(g)
+  setNodes(
+    allNodes().map((n) => {
+      const p = g.node(n.id)
+      return { ...n, position: { x: p.x - W / 2, y: p.y - H / 2 } }
+    }),
+  )
+  clearSelection()
+}
+
+onMounted(load)
 </script>
 
 <template>
-  <el-empty description="DAG 编排画布（M2 建设中）" />
+  <div class="canvas-page">
+    <!-- 顶部工具条 -->
+    <div class="toolbar">
+      <div class="wf-meta">
+        <el-input v-model="name" placeholder="工作流名称（必填）" style="width: 220px" />
+        <el-input v-model="description" placeholder="描述（可选）" style="width: 260px" />
+        <el-tag v-if="status === 'published'" type="success">已发布 v{{ version }}</el-tag>
+        <el-tag v-else-if="status === 'draft'" type="warning">草稿 v{{ version }}</el-tag>
+        <el-tag v-else-if="status === 'archived'" type="info">已归档</el-tag>
+        <el-tag v-else type="info">未保存</el-tag>
+      </div>
+      <div class="wf-actions">
+        <el-button @click="router.push('/workflows')">返回列表</el-button>
+        <el-button @click="autoLayout">自动布局</el-button>
+        <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+        <el-button :loading="validating" @click="validate">校验</el-button>
+        <el-button type="success" :loading="publishing" :disabled="status !== 'draft'" @click="publish">
+          发布
+        </el-button>
+        <el-button type="warning" :disabled="status !== 'published'" @click="openDryRun">干跑</el-button>
+      </div>
+    </div>
+
+    <div class="canvas-body">
+      <!-- 左侧节点面板 -->
+      <div class="palette">
+        <div class="palette-title">节点</div>
+        <div
+          v-for="p in PALETTE"
+          :key="p.type"
+          class="palette-item"
+          @click="addFromPalette(p.type)"
+        >
+          {{ p.label }}（{{ p.type }}）
+        </div>
+        <div class="palette-tip">点击添加节点；从节点右侧圆点拖出连线。</div>
+      </div>
+
+      <!-- 画布 -->
+      <div class="flow-wrap">
+        <VueFlow
+          v-model:nodes="nodes"
+          v-model:edges="edges"
+          :node-types="nodeTypes"
+          :default-viewport="{ x: 40, y: 20, zoom: 0.9 }"
+          @connect="onConnect"
+          @node-click="(ev) => selectNode(ev.node.id)"
+          @edge-click="(ev) => selectEdge(ev.edge.id)"
+          @pane-click="clearSelection"
+          :fit-view-on-init="true"
+          :min-zoom="0.2"
+          :max-zoom="2"
+        >
+          <template #node-canvas="nodeProps">
+            <CanvasNode v-bind="nodeProps" />
+          </template>
+        </VueFlow>
+      </div>
+
+      <!-- 右侧配置面板 -->
+      <div class="inspector">
+        <template v-if="selectedKind === 'node' && selectedNode">
+          <div class="inspector-title">
+            {{ selectedNode ? nodeLabel(selectedNode) : '' }}
+            <el-button size="small" type="danger" plain @click="deleteSelected">删除</el-button>
+          </div>
+          <el-form label-width="86px" size="small">
+            <el-form-item label="节点类型">
+              <el-tag>{{ selectedNode ? nodeTypeOf(selectedNode) : '' }}</el-tag>
+            </el-form-item>
+            <el-form-item label="节点名称">
+              <el-input :model-value="selectedNode!.data.real.name" placeholder="留空显示类型" @update:model-value="updateNodeName" />
+            </el-form-item>
+
+            <!-- ACTION：channel + templateId + unitCost -->
+            <template v-if="nodeTypeOf(selectedNode) === 'ACTION'">
+              <el-form-item label="触达渠道">
+                <el-select :model-value="selectedNode ? nodeConfig(selectedNode).channel : ''" placeholder="选择渠道" style="width: 100%" @update:model-value="(v: string) => updateNodeConfig('channel', v)">
+                  <el-option v-for="c in CHANNEL_IDS" :key="c" :label="c" :value="c" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="模板">
+                <el-select
+                  :model-value="selectedNode ? nodeConfig(selectedNode).templateId : ''"
+                  placeholder="选择模板（按渠道过滤）"
+                  style="width: 100%"
+                  @update:model-value="(v: number) => updateNodeConfig('templateId', v)"
+                >
+                  <el-option
+                    v-for="t in templates.filter((t) => !selectedNode || !nodeConfig(selectedNode).channel || t.channel === nodeConfig(selectedNode).channel)"
+                    :key="t.id"
+                    :label="`[${t.channel}] ${t.name}`"
+                    :value="t.id"
+                  />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="单价(元)">
+                <el-input-number
+                  :model-value="selectedNode ? Number(nodeConfig(selectedNode).unitCost ?? 0) : 0"
+                  :min="0"
+                  :precision="2"
+                  :step="0.1"
+                  controls-position="right"
+                  @update:model-value="(v: number | undefined) => updateNodeConfig('unitCost', v)"
+                />
+              </el-form-item>
+            </template>
+
+            <!-- DELAY：durationMinutes -->
+            <template v-else-if="selectedNode && nodeTypeOf(selectedNode) === 'DELAY'">
+              <el-form-item label="时长(分)">
+                <el-input-number
+                  :model-value="selectedNode ? Number(nodeConfig(selectedNode).durationMinutes ?? 0) : 0"
+                  :min="1"
+                  controls-position="right"
+                  @update:model-value="(v: number | undefined) => updateNodeConfig('durationMinutes', v)"
+                />
+              </el-form-item>
+            </template>
+
+            <div v-else-if="selectedNode && nodeTypeOf(selectedNode) === 'CONDITION'" class="config-hint">
+              条件节点：出边可配置条件分支，最多一条无条件边作为兜底（else）。
+            </div>
+            <div v-else class="config-hint">该节点无需配置。</div>
+          </el-form>
+        </template>
+
+        <template v-else-if="selectedKind === 'edge' && selectedEdge">
+          <div class="inspector-title">
+            连线 {{ selectedEdge ? selectedEdge.source : '' }} → {{ selectedEdge ? selectedEdge.target : '' }}
+            <el-button size="small" type="danger" plain @click="deleteSelected">删除</el-button>
+          </div>
+          <el-form label-width="86px" size="small">
+            <el-form-item label="分支类型">
+              <el-radio-group :model-value="edgeMode" @update:model-value="(v: string) => setEdgeMode(v as 'else' | 'if')">
+                <el-radio value="if">条件分支</el-radio>
+                <el-radio value="else">否则(else)</el-radio>
+              </el-radio-group>
+            </el-form-item>
+            <template v-if="edgeMode === 'if' && selectedEdge!.data.condition">
+              <el-form-item label="条件 DSL">
+                <div class="cond-editor-wrap">
+                  <EdgeConditionEditor
+                    :model-value="selectedEdge!.data.condition"
+                    :root="true"
+                    @update:model-value="updateEdgeCondition"
+                  />
+                </div>
+              </el-form-item>
+            </template>
+            <div v-else class="config-hint">无条件边：流量兜底走此分支。</div>
+          </el-form>
+        </template>
+
+        <div v-else class="inspector-empty">
+          点击节点或连线进行配置。<br />
+          提示：TRIGGER 只能有一个；需有 END；CONDITION 出边需带条件。
+        </div>
+      </div>
+    </div>
+
+    <!-- 干跑快照选择 -->
+    <el-dialog v-model="dryRunDialog" title="选择人群快照（干跑）" width="420px">
+      <el-form label-width="90px">
+        <el-form-item label="人群">
+          <el-select v-model="dryRunAudienceId" placeholder="选择人群" style="width: 100%" @update:model-value="(v: number) => selectAudience(v)">
+            <el-option v-for="a in audiences" :key="a.id" :label="a.name" :value="a.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="快照">
+          <el-select v-model="dryRunSnapshotId" placeholder="选择 ready 快照" style="width: 100%">
+            <el-option
+              v-for="s in snapshots"
+              :key="s.id"
+              :label="`快照 #${s.id}（${s.memberCount} 人 · ${s.executedAt}）`"
+              :value="s.id"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="dryRunDialog = false">取消</el-button>
+        <el-button type="primary" @click="runDryRun">开始干跑</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 干跑报告抽屉 -->
+    <el-drawer v-model="reportVisible" title="干跑报告" size="640px">
+      <template v-if="report">
+        <div class="report-summary">
+          <el-descriptions :column="2" border size="small">
+            <el-descriptions-item label="执行 ID">#{{ report.executionId }}</el-descriptions-item>
+            <el-descriptions-item label="状态">
+              <el-tag :type="report.status === 'done' ? 'success' : 'danger'">{{ report.status }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="成员总数">{{ report.totalMembers }}</el-descriptions-item>
+            <el-descriptions-item label="耗时">{{ report.durationMs }} ms</el-descriptions-item>
+          </el-descriptions>
+          <el-alert v-if="report.error" :title="report.error" type="error" :closable="false" class="report-error" />
+        </div>
+        <el-table :data="report.nodes" size="small" border>
+          <el-table-column prop="key" label="节点" width="120" />
+          <el-table-column prop="nodeType" label="类型" width="110" />
+          <el-table-column prop="status" label="状态" width="90">
+            <template #default="{ row }">
+              <el-tag :type="row.status === 'done' ? 'success' : 'danger'" size="small">{{ row.status }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="contacts" label="流入人数" width="90" />
+          <el-table-column label="输出" min-width="200">
+            <template #default="{ row }">
+              <pre class="node-output">{{ JSON.stringify(row.output, null, 1) }}</pre>
+            </template>
+          </el-table-column>
+        </el-table>
+      </template>
+    </el-drawer>
+  </div>
 </template>
+
+<style scoped>
+.canvas-page {
+  height: calc(100vh - 60px);
+  display: flex;
+  flex-direction: column;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #e4e7ed;
+  background: #fff;
+  flex-wrap: wrap;
+}
+.wf-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.wf-actions {
+  display: flex;
+  gap: 8px;
+}
+.canvas-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.palette {
+  width: 160px;
+  border-right: 1px solid #e4e7ed;
+  background: #fafafa;
+  padding: 12px 10px;
+  overflow-y: auto;
+}
+.palette-title {
+  font-weight: 600;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+.palette-item {
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: #fff;
+  border: 1px solid #dcdfe6;
+  border-radius: 6px;
+  cursor: grab;
+  font-size: 13px;
+  text-align: center;
+  transition: border-color 0.2s;
+}
+.palette-item:hover {
+  border-color: #409eff;
+  color: #409eff;
+}
+.palette-tip {
+  margin-top: 12px;
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.6;
+}
+.flow-wrap {
+  flex: 1;
+  min-width: 300px;
+  background: #f8fafc;
+}
+.inspector {
+  width: 320px;
+  border-left: 1px solid #e4e7ed;
+  background: #fff;
+  padding: 14px;
+  overflow-y: auto;
+}
+.inspector-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+  margin-bottom: 12px;
+  font-size: 14px;
+}
+.inspector-empty {
+  color: #909399;
+  font-size: 13px;
+  line-height: 1.8;
+  padding-top: 20px;
+  text-align: center;
+}
+.config-hint {
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.7;
+  padding: 4px 0;
+}
+.cond-editor-wrap {
+  width: 100%;
+}
+.report-summary {
+  margin-bottom: 14px;
+}
+.report-error {
+  margin-top: 10px;
+}
+.node-output {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: #606266;
+}
+</style>

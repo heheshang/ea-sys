@@ -7,6 +7,7 @@ import com.easysys.api.dto.workflow.SaveWorkflowRequest;
 import com.easysys.api.dto.workflow.ValidationResponse;
 import com.easysys.api.dto.workflow.WorkflowEdgeSpec;
 import com.easysys.api.dto.workflow.WorkflowNodeSpec;
+import com.easysys.api.dto.workflow.WorkflowSummaryView;
 import com.easysys.api.dto.workflow.WorkflowView;
 import com.easysys.api.entity.AudienceSnapshot;
 import com.easysys.api.entity.AudienceSnapshotMember;
@@ -43,6 +44,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -149,6 +151,44 @@ public class WorkflowService {
         }
         replaceCanvas(wf.getRefId(), wf.getVersion(), req);
         return view(wf);
+    }
+
+    /** 工作流列表：每业务 id（ref_id）族最新可用行（DRAFT 优先，否则最新 PUBLISHED；全归档时取最新行）。 */
+    public List<WorkflowSummaryView> list() {
+        Long tenantId = TenantContext.require();
+        List<Workflow> all = workflowMapper.selectList(
+                new LambdaQueryWrapper<Workflow>().eq(Workflow::getTenantId, tenantId));
+        Map<Long, Workflow> latestByRef = new LinkedHashMap<>();
+        for (Workflow wf : all) {
+            Workflow cur = latestByRef.get(wf.getRefId());
+            if (cur == null) {
+                latestByRef.put(wf.getRefId(), wf);
+                continue;
+            }
+            // 可用行优先：DRAFT > 已发布 > 已归档（取更新版本）
+            if (rank(wf) > rank(cur) || (rank(wf) == rank(cur) && version(wf) > version(cur))) {
+                latestByRef.put(wf.getRefId(), wf);
+            }
+        }
+        List<WorkflowSummaryView> out = new ArrayList<>(latestByRef.size());
+        for (Workflow wf : latestByRef.values()) {
+            out.add(new WorkflowSummaryView(wf.getRefId(), wf.getName(), wf.getDescription(), wf.getStatus(),
+                    wf.getVersion(), wf.getPublishedAt(), wf.getCreatedBy(), wf.getCreatedAt(), wf.getUpdatedAt()));
+        }
+        out.sort(Comparator.comparing(WorkflowSummaryView::updatedAt).reversed());
+        return out;
+    }
+
+    private static int rank(Workflow wf) {
+        return switch (wf.getStatus() == null ? "" : wf.getStatus()) {
+            case "draft" -> 2;
+            case "published" -> 1;
+            default -> 0;
+        };
+    }
+
+    private static int version(Workflow wf) {
+        return wf.getVersion() == null ? 0 : wf.getVersion();
     }
 
     /** 校验当前版本行的画布结构（非 body）：发布/干跑前由 DB 数据兜底校验。 */

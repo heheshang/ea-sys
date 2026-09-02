@@ -4,11 +4,13 @@ import com.easysys.api.dto.workflow.DryRunRequest;
 import com.easysys.api.dto.workflow.DryRunResponse;
 import com.easysys.api.dto.workflow.SaveWorkflowRequest;
 import com.easysys.api.dto.workflow.ValidationResponse;
+import com.easysys.api.dto.workflow.WorkflowSummaryView;
 import com.easysys.api.dto.workflow.WorkflowView;
 import com.easysys.api.service.WorkflowService;
 import com.easysys.common.web.ApiResponse;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
+import java.util.List;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -28,6 +30,12 @@ public class WorkflowController {
 
     public WorkflowController(WorkflowService workflowService) {
         this.workflowService = workflowService;
+    }
+
+    /** 工作流列表：每业务 id 族最新可用行。 */
+    @GetMapping
+    public ApiResponse<List<WorkflowSummaryView>> list() {
+        return ApiResponse.ok(workflowService.list());
     }
 
     /** 新建画布（v1 DRAFT）。 */

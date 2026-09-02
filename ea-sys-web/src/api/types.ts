@@ -21,6 +21,53 @@ export interface WhoamiResult {
   role: string
 }
 
+/** 画布节点类型（后端 NodeType）。 */
+export type WorkflowNodeType =
+  | 'TRIGGER' | 'CONDITION' | 'AGENT_SPLIT' | 'DELAY' | 'ACTION' | 'UPDATE' | 'END'
+
+/** 画布节点（WorkflowNodeSpec）。key 画布内唯一；config 为节点配置 JSON 对象。 */
+export interface WorkflowNodeSpec {
+  key: string
+  type: WorkflowNodeType
+  name?: string
+  config?: Record<string, unknown> | null
+  position?: { x: number; y: number } | null
+}
+
+/** 边条件 DSL 操作符白名单（ConditionCompiler.OPS，比较用符号形式）。 */
+export type ConditionOp =
+  | '>' | '>=' | '<' | '<='
+  | 'equals' | 'not_equals' | 'in' | 'not_in' | 'contains'
+  | 'exists' | 'not_exists'
+
+/** 边条件项：字段（event./contact./history. 前缀）+ 操作符 + 值。 */
+export interface ConditionItem {
+  field: string
+  op: ConditionOp
+  value?: string | number | boolean | Array<string | number | boolean>
+}
+
+/** 边条件 DSL（与 AudienceRule 同构的 AND/OR 分组树，字段前缀替换为 event./contact./history.）。 */
+export interface ConditionRule {
+  op: 'AND' | 'OR'
+  items: Array<ConditionItem | ConditionRule>
+}
+
+/** 画布边（WorkflowEdgeSpec）。condition 为条件 DSL；null/undefined = 兜底分支（else）。 */
+export interface WorkflowEdgeSpec {
+  source: string
+  target: string
+  condition?: ConditionRule | null
+}
+
+/** 保存画布请求（SaveWorkflowRequest）。 */
+export interface SaveWorkflowRequest {
+  name: string
+  description?: string
+  nodes: WorkflowNodeSpec[]
+  edges: WorkflowEdgeSpec[]
+}
+
 /** 工作流视图（WorkflowView：画布 + 节点 + 边）。 */
 export interface WorkflowView {
   id: number
@@ -35,20 +82,61 @@ export interface WorkflowView {
   edges: WorkflowEdgeSpec[]
 }
 
-export interface WorkflowNodeSpec {
-  id: string
-  type: string
-  x: number
-  y: number
-  config?: Record<string, unknown>
+/** 工作流列表行（每业务 id 族最新可用行，不含画布）。 */
+export interface WorkflowSummary {
+  id: number
+  name: string
+  description: string
+  status: 'draft' | 'published' | 'archived'
+  version: number
+  publishedAt: string | null
+  createdBy: string
+  createdAt: string
+  updatedAt: string
 }
 
-export interface WorkflowEdgeSpec {
-  id: string
-  source: string
-  target: string
-  /** 条件边表达式；缺省为恒 true。 */
-  condition?: string
+/** 画布校验结果（ValidationResponse）。valid=true 即可发布。 */
+export interface ValidationResponse {
+  valid: boolean
+  errors: string[]
+}
+
+/** 干跑/执行请求（DryRunRequest）：对已发布版本 + 冻结快照成员模拟执行。 */
+export interface DryRunRequest {
+  audienceSnapshotId: number
+}
+
+/** 单节点执行结果（DryRunResponse.NodeOutcome）。 */
+export interface NodeOutcome {
+  key: string
+  nodeType: string
+  nodeName: string
+  status: string
+  contacts: number
+  output: Record<string, unknown> | null
+}
+
+/** 执行/干跑报告（DryRunResponse）。 */
+export interface DryRunResponse {
+  executionId: number
+  workflowId: number
+  workflowVersion: number
+  status: string
+  totalMembers: number
+  dryRun: boolean
+  durationMs: number
+  error: string | null
+  nodes: NodeOutcome[]
+}
+
+/** 触达模板（TemplateView）。 */
+export interface Template {
+  id: number
+  channel: string
+  name: string
+  content: string
+  status: string
+  createdAt: string
 }
 
 /** 分页响应体（对齐 PageResponse<T>）。 */

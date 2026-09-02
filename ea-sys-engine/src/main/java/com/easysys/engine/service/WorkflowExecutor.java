@@ -16,6 +16,7 @@ import com.easysys.engine.mapper.ExecutionMapper;
 import com.easysys.engine.mapper.ExecutionNodeStateMapper;
 import com.easysys.engine.mapper.TemplateMapper;
 import com.easysys.engine.model.ExecutionStatus;
+import com.easysys.engine.model.TriggerType;
 import com.easysys.engine.rule.ConditionCompiler;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -70,13 +71,27 @@ public class WorkflowExecutor extends AbstractDagExecutor {
         this.frequencyGuard = frequencyGuard;
     }
 
-    /** 真实执行入口：dryRun=false；存在 FAILED 下发记录 → 执行状态降级 PARTIAL。 */
+    /** 手动真实执行入口：dryRun=false，委托统一 8 参入口（含 PARTIAL 降级）。 */
     @Transactional
     public ExecutionReport execute(Workflow workflow, List<WorkflowNode> nodes, List<WorkflowEdge> edges,
                                    Long audienceSnapshotId, List<MemberContext> members) {
-        ExecutionReport report = super.execute(workflow, nodes, edges, audienceSnapshotId, members, false);
+        return execute(workflow, nodes, edges, audienceSnapshotId, members, false,
+                TriggerType.MANUAL.name(), null);
+    }
+
+    /**
+     * 全部触发形态（MANUAL/SCHEDULED/IMMEDIATE/EVENT/API）统一真实执行入口：
+     * dryRun=false 且存在 FAILED 下发记录 → 执行状态降级 PARTIAL（不再伪 SUCCEEDED）。
+     */
+    @Override
+    @Transactional
+    public ExecutionReport execute(Workflow workflow, List<WorkflowNode> nodes, List<WorkflowEdge> edges,
+                                   Long audienceSnapshotId, List<MemberContext> members, boolean dryRun,
+                                   String triggerType, String triggerPayload) {
+        ExecutionReport report = super.execute(workflow, nodes, edges, audienceSnapshotId, members, dryRun,
+                triggerType, triggerPayload);
         // super.execute 的 @Transactional 被自调用绕过，由本方法外层事务覆盖整段执行
-        if (ExecutionStatus.SUCCEEDED.name().equals(report.status())
+        if (!dryRun && ExecutionStatus.SUCCEEDED.name().equals(report.status())
                 && hasFailedDeliveries(report.executionId())) {
             Execution update = new Execution();
             update.setId(report.executionId());

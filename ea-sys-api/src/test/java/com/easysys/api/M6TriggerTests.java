@@ -40,6 +40,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -279,6 +280,40 @@ class M6TriggerTests {
         Long touched = inTenant(() -> deliveryRecordMapper.selectCount(
                 Wrappers.<DeliveryRecord>lambdaQuery().eq(DeliveryRecord::getExecutionId, executions.get(0).getId())));
         assertThat(touched).isEqualTo(1L);
+    }
+
+    /**
+     * 语义：发布即执行；成员缺收件地址（无 phone）→ sms 适配器返回「联系人缺少手机号(sms)」
+     * → delivery_record FAILED → 执行状态降级 PARTIAL（不再伪 SUCCEEDED）。
+     * 临时配置 sms 真实凭据：无凭据时适配器降级 console（成功），必须真实通道才走 FAILED 分支；
+     * finally 删除凭据，避免串扰同类的 console- 断言。
+     */
+    @Test
+    void immediateTriggerFailedDeliveryDowngradesToPartial() throws Exception {
+        createContact(contact("imm-fail", null, null, highRisk("失败")));
+        long template = createTemplate("sms", "短信关怀", "Hi ${name!}");
+        long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
+        long wf = saveCanvas(Map.of("triggerType", "IMMEDIATE", "audienceId", audience), template);
+        mvc.perform(put("/api/channel-configs/sms").header(AUTH, bearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(asJson(Map.of("config", Map.of("endpoint", "http://127.0.0.1:9/send"), "enabled", true))))
+                .andExpect(status().isOk());
+        try {
+            publish(wf);
+
+            List<Execution> executions = executionsOf(wf);
+            assertThat(executions).hasSize(1);
+            assertThat(executions.get(0).getTriggerType()).isEqualTo("IMMEDIATE");
+            assertThat(executions.get(0).getStatus()).isEqualTo("PARTIAL");
+            Long failed = inTenant(() -> deliveryRecordMapper.selectCount(
+                    Wrappers.<DeliveryRecord>lambdaQuery()
+                            .eq(DeliveryRecord::getExecutionId, executions.get(0).getId())
+                            .eq(DeliveryRecord::getStatus, "FAILED")));
+            assertThat(failed).isEqualTo(1L);
+        } finally {
+            mvc.perform(delete("/api/channel-configs/sms").header(AUTH, bearer()))
+                    .andExpect(status().isOk());
+        }
     }
 
     /** 语义：每次发布都立即执行一次（无 cron 槽位，不依赖轮询与防双跑）。 */

@@ -254,9 +254,14 @@ public class WorkflowService {
 
     /** 干跑/真实执行的公共前置校验：已发布版本 + 快照就绪，装配成员画像。 */
     private List<AbstractDagExecutor.MemberContext> executionPreamble(Long id, DryRunRequest req, String action) {
-        if (publishedRow(id) == null) {
+        Workflow wf = publishedRow(id);
+        if (wf == null) {
             requireWorkflow(id); // 404（id 不存在）
             throw new BizException(ErrorCode.BAD_REQUEST, "请先发布再" + action);
+        }
+        List<String> errors = validateRows(wf);
+        if (!errors.isEmpty()) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "画布校验不通过，请修正后重新发布: " + String.join("; ", errors));
         }
         if (req == null || req.audienceSnapshotId() == null) {
             throw new BizException(ErrorCode.BAD_REQUEST, action + "需要 audienceSnapshotId");
@@ -333,6 +338,15 @@ public class WorkflowService {
                 .map(e -> new DagValidator.EdgeDef(e.source(), e.target(), e.condition()))
                 .toList();
         List<String> errors = new ArrayList<>(dagValidator.validate(ndefs, edefs).errors());
+        for (DagValidator.NodeDef n : ndefs) {
+            if ("ACTION".equals(n.type())) {
+                String channel = n.config() == null ? null : n.config().path("channel").asText(null);
+                long templateId = n.config() == null ? 0 : n.config().path("templateId").asLong(0);
+                if (channel == null || channel.isBlank() || templateId <= 0) {
+                    errors.add("ACTION 节点 " + n.key() + " 缺少 channel/templateId 配置");
+                }
+            }
+        }
         for (DagValidator.EdgeDef e : edefs) {
             if (e.condition() != null && !e.condition().isNull() && !e.condition().isEmpty()) {
                 try {

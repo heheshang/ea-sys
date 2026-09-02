@@ -358,8 +358,9 @@ async function selectAudience(id: number) {
 
 async function load() {
   if (!workflowId.value) {
-    // 新画布也要加载模板，供 ACTION 节点配置下拉使用
+    // 新画布也要加载模板与人群，供 ACTION/TRIGGER 节点配置下拉使用
     await loadTemplates()
+    await loadAudiences()
     return
   }
   const wf = await getWorkflow(workflowId.value)
@@ -400,6 +401,7 @@ async function load() {
     setTimeout(autoLayout, 0)
   }
   await loadTemplates()
+  await loadAudiences()
   fitView({ padding: 0.15 })
 }
 

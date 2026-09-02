@@ -19,6 +19,7 @@ import com.easysys.engine.model.ExecutionStatus;
 import com.easysys.engine.rule.ConditionCompiler;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -55,8 +56,9 @@ public class WorkflowExecutor extends AbstractDagExecutor {
     public WorkflowExecutor(ExecutionMapper executionMapper, ExecutionNodeStateMapper stateMapper,
                             ConditionCompiler compiler, DeliveryRecordMapper deliveryRecordMapper,
                             TemplateMapper templateMapper, TemplateRenderer templateRenderer,
-                            ChannelRouter channelRouter, @Lazy FrequencyGuard frequencyGuard) {
-        super(executionMapper, stateMapper, compiler);
+                            ChannelRouter channelRouter, @Lazy FrequencyGuard frequencyGuard,
+                            ObjectProvider<AgentSplitHandler> agentSplitHandler) {
+        super(executionMapper, stateMapper, compiler, agentSplitHandler);
         this.deliveryRecordMapper = deliveryRecordMapper;
         this.templateMapper = templateMapper;
         this.templateRenderer = templateRenderer;

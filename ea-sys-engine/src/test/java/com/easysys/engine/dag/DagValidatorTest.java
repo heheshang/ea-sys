@@ -326,14 +326,53 @@ class DagValidatorTest {
     }
 
     @Test
-    void agentSplitDeferredToM4() {
+    void agentSplitWithLayerEdgesPasses() {
+        List<DagValidator.NodeDef> nodes = List.of(
+                node("trigger", "TRIGGER"),
+                node("split", "AGENT_SPLIT"),
+                node("a1", "ACTION"),
+                node("a2", "ACTION"),
+                node("end", "END"));
+        List<DagValidator.EdgeDef> edges = List.of(
+                edge("trigger", "split"),
+                condEdge("split", "a1"),
+                condEdge("split", "a2"),
+                edge("split", "end"), // 无通道兜底
+                edge("a1", "end"),
+                edge("a2", "end"));
+        DagValidator.ValidationResult r = validator.validate(nodes, edges);
+        assertTrue(r.valid(), () -> "errors: " + r.errors());
+    }
+
+    @Test
+    void agentSplitWithoutCondEdgeRejected() {
         List<DagValidator.NodeDef> nodes = List.of(
                 node("trigger", "TRIGGER"),
                 node("split", "AGENT_SPLIT"),
                 node("end", "END"));
         List<DagValidator.EdgeDef> edges = List.of(edge("trigger", "split"), edge("split", "end"));
         DagValidator.ValidationResult r = validator.validate(nodes, edges);
-        assertTrue(r.errors().stream().anyMatch(e -> e.contains("M4")),
+        assertTrue(r.errors().stream().anyMatch(e -> e.contains("带条件出边")),
+                () -> "errors: " + r.errors());
+    }
+
+    @Test
+    void agentSplitMultipleElseRejected() {
+        List<DagValidator.NodeDef> nodes = List.of(
+                node("trigger", "TRIGGER"),
+                node("split", "AGENT_SPLIT"),
+                node("a1", "ACTION"),
+                node("a2", "ACTION"),
+                node("end", "END"));
+        List<DagValidator.EdgeDef> edges = List.of(
+                edge("trigger", "split"),
+                condEdge("split", "a1"),
+                edge("split", "a2"),
+                edge("split", "end"), // 第二条兜底 → 违规
+                edge("a1", "end"),
+                edge("a2", "end"));
+        DagValidator.ValidationResult r = validator.validate(nodes, edges);
+        assertTrue(r.errors().stream().anyMatch(e -> e.contains("至多一条无条件")),
                 () -> "errors: " + r.errors());
     }
 

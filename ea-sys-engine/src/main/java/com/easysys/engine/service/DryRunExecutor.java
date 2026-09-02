@@ -9,6 +9,7 @@ import com.easysys.engine.mapper.ExecutionNodeStateMapper;
 import com.easysys.engine.rule.ConditionCompiler;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -26,8 +27,8 @@ import java.util.Map;
 public class DryRunExecutor extends AbstractDagExecutor {
 
     public DryRunExecutor(ExecutionMapper executionMapper, ExecutionNodeStateMapper stateMapper,
-                          ConditionCompiler compiler) {
-        super(executionMapper, stateMapper, compiler);
+                          ConditionCompiler compiler, ObjectProvider<AgentSplitHandler> agentSplitHandler) {
+        super(executionMapper, stateMapper, compiler, agentSplitHandler);
     }
 
     /** 干跑入口：dryRun=true，执行共享 DAG 推进。 */

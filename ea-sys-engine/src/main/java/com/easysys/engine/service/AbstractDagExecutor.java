@@ -17,6 +17,7 @@ import com.easysys.engine.rule.ConditionCompiler;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
@@ -45,13 +46,15 @@ public abstract class AbstractDagExecutor {
     protected final ExecutionMapper executionMapper;
     protected final ExecutionNodeStateMapper stateMapper;
     protected final ConditionCompiler compiler;
+    protected final ObjectProvider<AgentSplitHandler> agentSplitHandler;
     protected final ObjectMapper objectMapper = new ObjectMapper();
 
     protected AbstractDagExecutor(ExecutionMapper executionMapper, ExecutionNodeStateMapper stateMapper,
-                                  ConditionCompiler compiler) {
+                                  ConditionCompiler compiler, ObjectProvider<AgentSplitHandler> agentSplitHandler) {
         this.executionMapper = executionMapper;
         this.stateMapper = stateMapper;
         this.compiler = compiler;
+        this.agentSplitHandler = agentSplitHandler;
     }
 
     /** 成员画像上下文（event 触发模式后续里程碑使用，批量干跑/执行为空） */
@@ -100,7 +103,7 @@ public abstract class AbstractDagExecutor {
 
         String error = null;
         try {
-            runNodes(executionId, tenantId, nodes, edges, members);
+            runNodes(executionId, tenantId, nodes, edges, members, dryRun);
             Execution update = new Execution();
             update.setId(executionId);
             update.setStatus(ExecutionStatus.SUCCEEDED.name());
@@ -173,7 +176,7 @@ public abstract class AbstractDagExecutor {
     }
 
     private void runNodes(Long executionId, Long tenantId, List<WorkflowNode> nodes, List<WorkflowEdge> edges,
-                          List<MemberContext> members) {
+                          List<MemberContext> members, boolean dryRun) {
         if (members == null) {
             members = List.of();
         }
@@ -216,6 +219,16 @@ public abstract class AbstractDagExecutor {
                 List<WorkflowEdge> outs = outByKey.getOrDefault(key, List.of());
                 if (type == NodeType.CONDITION) {
                     splitConditional(here, outs, byId, conditionCache, output, arriving);
+                } else if (type == NodeType.AGENT_SPLIT) {
+                    AgentSplitHandler split = agentSplitHandler.getIfAvailable();
+                    if (split == null) {
+                        throw new EngineException("AGENT_SPLIT 节点需要分层处理器（api 层接入）: " + node.getNodeKey());
+                    }
+                    Map<String, LinkedHashSet<Long>> routed = split.split(
+                            executionId, node, here, byId, outs, output, dryRun);
+                    for (Map.Entry<String, LinkedHashSet<Long>> x : routed.entrySet()) {
+                        arriving.put(x.getKey(), x.getValue());
+                    }
                 } else if (type == NodeType.ACTION) {
                     handleAction(executionId, node, here, byId, output);
                     passThrough(outs, here, arriving);

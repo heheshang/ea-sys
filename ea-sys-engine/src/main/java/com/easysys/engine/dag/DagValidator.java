@@ -191,7 +191,14 @@ public class DagValidator {
                         errors.add("CONDITION 节点只允许至多一条无条件（兜底）出边: " + x.getKey());
                     }
                 }
-                case AGENT_SPLIT -> errors.add("AGENT_SPLIT 节点 M4 后支持: " + x.getKey());
+                case AGENT_SPLIT -> {
+                    if (condEdges == 0) {
+                        errors.add("AGENT_SPLIT 节点必须至少一条带条件出边（layer 分流）: " + x.getKey());
+                    }
+                    if (elseEdges > 1) {
+                        errors.add("AGENT_SPLIT 节点只允许至多一条无条件（无通道兜底）出边: " + x.getKey());
+                    }
+                }
                 case DELAY, ACTION, UPDATE -> {
                     if (out > 1) {
                         errors.add(t + " 节点 " + x.getKey() + " 只允许至多一条出边");

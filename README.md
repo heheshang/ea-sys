@@ -20,7 +20,7 @@
 | 后端 | Java 21 + Spring Boot 3.x + MyBatis-Plus |
 | 存储 | PostgreSQL 16 + Flyway |
 | 缓存 / 锁 / 限流 | Redis |
-| 消息队列 | RocketMQ 5.x（起步可用 Redis Streams）|
+| 消息队列 | Redis Streams（Redisson 消费者组 + ACK；预留 RocketMQ 迁移位）|
 | 智能体 | AgentScope Java 2.0 |
 | 前端 | Vue 3 + TypeScript + Element Plus（DAG 画布 Vue Flow）|
 | 触达通道 | 短信 / 邮件 / 微信模板消息（App 推送预留 SPI 扩展位）|
@@ -39,7 +39,7 @@
 | M6b | 触发双模式执行（定时轮询 / 事件 / API 触发入流）| 完成 |
 | 工具面 | 前端（登录 / 人群 / 画布 / 触达模板 / 触达监控 / 智能体配置 / 留存看板）| 完成 |
 
-> 后续扩展：AB / 灰度、消息队列（RocketMQ / Redis Streams）、计划导入校验 Agent。真实触达适配器（短信 / 邮件 / 微信模板消息）已实现：凭据经 channel_config 按租户注入，未配凭据时降级 console 日志下发。
+> 已落地：计划导入校验（Excel / CSV 解析 + 8 维确定性校验 + 发布闸门）、AB / 灰度（条件 DSL `percentage` 按 contact.id 稳定哈希分流）、消息队列（事件触发异步化：Redis Streams 消费者组），事件链路触发 → 匹配 EVENT 流程异步执行。后续扩展：真实通道供应商 API 适配、消息队列 RocketMQ 迁移、智能运营策略 Agent 化。触达适配器（短信 / 邮件 / 微信模板消息）已实现：凭据经 channel_config 按租户注入，未配凭据时降级 console 日志下发。
 
 ## 文档索引
 
@@ -57,7 +57,7 @@
 
 M0–M6 核心闭环完成：五模块（common / engine / agent / channel / api）+ 人群圈选 / DAG 编排 / 触达执行 / 分层路由智能体 / 留存看板 / 流失预警，配套 Vue3+TS 前端（登录、人群、画布、模板、触达监控、智能体配置、留存看板）。分层策略支持草稿编辑与按规则路由。开发账号 `admin / admin123`（dev profile 自动初始化租户 1）。
 
-待续：真实通道供应商适配器、AB / 灰度、消息队列接入。
+待续：真实通道供应商 API 适配、消息队列 RocketMQ 迁移、策略 Agent 化。已具备：计划导入校验、AB / 灰度分流（percentage 操作符）、Redis Streams 事件消息队列。
 
 ## 本地开发
 

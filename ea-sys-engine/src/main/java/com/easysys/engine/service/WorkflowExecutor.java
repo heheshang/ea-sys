@@ -213,9 +213,14 @@ public class WorkflowExecutor extends AbstractDagExecutor {
         return r;
     }
 
-    /** 通道收件地址：sms → phone、email → email；画像缺该键（含非目标通道）→ null，真实通道由适配器拒发。 */
+    /** 通道收件地址：sms → phone、email → email、wechat → wechatOpenid；画像缺该键（含非目标通道）→ null，真实通道由适配器拒发。 */
     private static String channelAddress(String channel, Map<String, Object> contact) {
-        String key = "sms".equals(channel) ? "phone" : "email".equals(channel) ? "email" : null;
+        String key = switch (channel) {
+            case "sms" -> "phone";
+            case "email" -> "email";
+            case "wechat" -> "wechatOpenid";
+            default -> null;
+        };
         if (key == null) {
             return null;
         }

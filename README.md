@@ -23,7 +23,7 @@
 | 消息队列 | RocketMQ 5.x（起步可用 Redis Streams）|
 | 智能体 | AgentScope Java 2.0 |
 | 前端 | Vue 3 + TypeScript + Element Plus（DAG 画布 Vue Flow）|
-| 触达通道 | 短信 / 邮件 / App 推送（微信通道预留 SPI 扩展位）|
+| 触达通道 | 短信 / 邮件 / 微信模板消息（App 推送预留 SPI 扩展位）|
 
 ## 里程碑
 
@@ -39,7 +39,7 @@
 | M6b | 触发双模式执行（定时轮询 / 事件 / API 触发入流）| 完成 |
 | 工具面 | 前端（登录 / 人群 / 画布 / 触达模板 / 触达监控 / 智能体配置 / 留存看板）| 完成 |
 
-> 未完成 / 后续扩展：真实短信 / 邮件供应商适配器（当前日志控制台适配器）、微信通道、AB / 灰度、消息队列（RocketMQ / Redis Streams）、计划导入校验 Agent。
+> 后续扩展：AB / 灰度、消息队列（RocketMQ / Redis Streams）、计划导入校验 Agent。真实触达适配器（短信 / 邮件 / 微信模板消息）已实现：凭据经 channel_config 按租户注入，未配凭据时降级 console 日志下发。
 
 ## 文档索引
 

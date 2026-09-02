@@ -1,7 +1,7 @@
 package com.easysys.channel;
 
 /**
- * 通道适配 SPI（M3 实现，微信未接入但 SPI 预留扩展位）。
+ * 通道适配 SPI（M3 实现：sms / email / wechat）。
  * 实现类须注册为 Spring Bean 并通过 {@link #channel()} 声明通道标识。
  */
 public interface ChannelAdapter {

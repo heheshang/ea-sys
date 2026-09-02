@@ -8,6 +8,7 @@ import com.easysys.channel.ChannelAdapter;
 import com.easysys.channel.ChannelConfigProvider;
 import com.easysys.channel.HttpSmsChannelAdapter;
 import com.easysys.channel.SmtpEmailChannelAdapter;
+import com.easysys.channel.WechatChannelAdapter;
 import com.easysys.common.tenant.TenantContext;
 import com.easysys.common.tenant.TenantInfo;
 import com.easysys.engine.mapper.WorkflowMapper;
@@ -279,20 +280,145 @@ class ChannelConfigTests {
         assertThat(r.error()).contains("短信供应商返回 500");
     }
 
+    // ---------- 微信模板消息适配器：JDK HttpServer mock 微信 API ----------
+
+    private HttpServer wechatMock;
+    private final List<String> wechatTokenPaths = new CopyOnWriteArrayList<>();
+    private final List<String> wechatSendPaths = new CopyOnWriteArrayList<>();
+    private final List<String> wechatBodies = new CopyOnWriteArrayList<>();
+
+    @BeforeEach
+    void startWechatMock() throws Exception {
+        wechatMock = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        wechatMock.createContext("/cgi-bin/token", exchange -> {
+            wechatTokenPaths.add(exchange.getRequestURI().toString());
+            byte[] resp = "{\"access_token\":\"mock-token-abc\",\"expires_in\":7200}"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, resp.length);
+            exchange.getResponseBody().write(resp);
+            exchange.close();
+        });
+        wechatMock.createContext("/cgi-bin/message/template/send", exchange -> {
+            byte[] body = exchange.getRequestBody().readAllBytes();
+            wechatBodies.add(new String(body, StandardCharsets.UTF_8));
+            wechatSendPaths.add(exchange.getRequestURI().toString());
+            String resp = new String(body, StandardCharsets.UTF_8).contains("触发失败内容")
+                    ? "{\"errcode\":40001,\"errmsg\":\"invalid credential\"}"
+                    : "{\"errcode\":0,\"errmsg\":\"ok\"}";
+            byte[] bytes = resp.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        wechatMock.start();
+    }
+
+    @AfterEach
+    void stopWechatMock() {
+        wechatMock.stop(0);
+    }
+
+    private String wechatBase() {
+        return "http://127.0.0.1:" + wechatMock.getAddress().getPort();
+    }
+
+    @Test
+    void wechatPostsTemplateMessageWithToken() {
+        Map<String, String> cfg = Map.of(
+                "appId", "wx-app-123",
+                "appSecret", "wx-secret-456",
+                "templateId", "tpl-001",
+                "endpoint", wechatBase());
+        WechatChannelAdapter adapter = new WechatChannelAdapter(fakeConfig(cfg));
+
+        ChannelAdapter.SendResult r = adapter.send(sendRequest("openid-abc"));
+
+        assertThat(r.success()).isTrue();
+        assertThat(r.channelMessageId()).startsWith("wechat-");
+        assertThat(wechatTokenPaths).hasSize(1);
+        assertThat(wechatTokenPaths.get(0)).contains("appid=wx-app-123").contains("secret=wx-secret-456");
+        assertThat(wechatSendPaths.get(0)).contains("access_token=mock-token-abc");
+        assertThat(wechatBodies).hasSize(1);
+        assertThat(wechatBodies.get(0))
+                .contains("touser\":\"openid-abc")
+                .contains("template_id\":\"tpl-001")
+                .contains("你好，这是触达内容 #001");
+    }
+
+    @Test
+    void wechatCachesAccessTokenBetweenSends() {
+        Map<String, String> cfg = Map.of(
+                "appId", "wx-app-123",
+                "appSecret", "wx-secret-456",
+                "templateId", "tpl-001",
+                "endpoint", wechatBase());
+        WechatChannelAdapter adapter = new WechatChannelAdapter(fakeConfig(cfg));
+
+        ChannelAdapter.SendResult r1 = adapter.send(sendRequest("openid-abc"));
+        ChannelAdapter.SendResult r2 = adapter.send(sendRequest("openid-abc"));
+
+        assertThat(r1.success()).isTrue();
+        assertThat(r2.success()).isTrue();
+        assertThat(wechatTokenPaths).hasSize(1);
+        assertThat(wechatBodies).hasSize(2);
+    }
+
+    @Test
+    void wechatRejectsMissingOpenid() {
+        WechatChannelAdapter adapter = new WechatChannelAdapter(
+                fakeConfig(Map.of("appId", "a", "appSecret", "s", "templateId", "t", "endpoint", wechatBase())));
+
+        ChannelAdapter.SendResult r = adapter.send(sendRequest(null));
+
+        assertThat(r.success()).isFalse();
+        assertThat(r.error()).contains("openid");
+        assertThat(wechatTokenPaths).isEmpty();
+    }
+
+    @Test
+    void wechatRejectsMissingCredentials() {
+        WechatChannelAdapter adapter = new WechatChannelAdapter(
+                fakeConfig(Map.of("appId", "wx-app-123", "appSecret", "wx-secret-456", "endpoint", wechatBase())));
+
+        ChannelAdapter.SendResult r = adapter.send(sendRequest("openid-abc"));
+
+        assertThat(r.success()).isFalse();
+        assertThat(r.error()).contains("appId/appSecret/templateId");
+        assertThat(wechatTokenPaths).isEmpty();
+    }
+
+    @Test
+    void wechatFailsOnNonZeroErrcode() {
+        WechatChannelAdapter adapter = new WechatChannelAdapter(
+                fakeConfig(Map.of("appId", "wx-app-123", "appSecret", "wx-secret-456",
+                        "templateId", "tpl-001", "endpoint", wechatBase())));
+
+        ChannelAdapter.SendResult r = adapter.send(new ChannelAdapter.SendRequest(1L, 42L, 7L, "node-a",
+                "1", "触发失败内容", "1:42:7:node-a", "openid-abc"));
+
+        assertThat(r.success()).isFalse();
+        assertThat(r.error()).contains("errcode").contains("40001");
+        assertThat(wechatSendPaths).hasSize(1);
+    }
+
     // ---------- 无凭据降级 console（M3 回归契约：前缀 "console-"） ----------
 
     @Test
     void fallsBackToConsoleWithoutCredentials() {
         SmtpEmailChannelAdapter mail = new SmtpEmailChannelAdapter(NO_CONFIG);
         HttpSmsChannelAdapter sms = new HttpSmsChannelAdapter(NO_CONFIG);
+        WechatChannelAdapter wechat = new WechatChannelAdapter(NO_CONFIG);
 
         ChannelAdapter.SendResult mailR = mail.send(sendRequest("user@example.com"));
         ChannelAdapter.SendResult smsR = sms.send(sendRequest("13900000001"));
+        ChannelAdapter.SendResult wechatR = wechat.send(sendRequest("openid-abc"));
 
         assertThat(mailR.success()).isTrue();
         assertThat(mailR.channelMessageId()).startsWith("console-");
         assertThat(smsR.success()).isTrue();
         assertThat(smsR.channelMessageId()).startsWith("console-");
+        assertThat(wechatR.success()).isTrue();
+        assertThat(wechatR.channelMessageId()).startsWith("console-");
     }
 
     // ---------- channel_config：加密落库 + 脱敏 + CRUD ----------

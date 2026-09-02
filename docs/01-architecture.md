@@ -30,8 +30,8 @@ flowchart LR
       SPI[ChannelAdapter SPI]
       SMS[短信]
       MAIL[邮件]
-      PUSH[推送]
-      WX[微信 预留]
+      PUSH[推送 预留]
+      WX[微信]
     end
     Canvas --> GW --> WE
     Audit --> GW

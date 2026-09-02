@@ -321,6 +321,7 @@ public class WorkflowService {
         putIfNotNull(ctx, "status", c.getStatus());
         putIfNotNull(ctx, "phone", c.getPhone());
         putIfNotNull(ctx, "email", c.getEmail());
+        putIfNotNull(ctx, "wechatOpenid", c.getWechatOpenid());
         putIfNotNull(ctx, "externalId", c.getExternalId());
         ctx.put("suppressedChannels", suppressedChannels(c.getSuppression()));
         List<String> tags = tagMapper.selectList(
@@ -656,6 +657,7 @@ public class WorkflowService {
             putIfNotNull(ctx, "status", c.getStatus());
             putIfNotNull(ctx, "phone", c.getPhone());
             putIfNotNull(ctx, "email", c.getEmail());
+            putIfNotNull(ctx, "wechatOpenid", c.getWechatOpenid());
             putIfNotNull(ctx, "externalId", c.getExternalId());
             ctx.put("suppressedChannels", suppressedChannels(c.getSuppression()));
             List<String> t = tags.get(id);

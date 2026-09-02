@@ -193,6 +193,56 @@ export interface PageResponse<T> {
   size: number
 }
 
+/** 转化漏斗（GET /api/retention/funnel）：圈选 → 执行 → 触达。 */
+export interface FunnelView {
+  workflowId: number | null
+  seeded: number
+  executed: number
+  reached: number
+  seededToExecutedRate: number
+  executedToReachedRate: number
+}
+
+/** 区间留存（GET /api/retention/interval）：N 天双窗口。 */
+export interface IntervalRetentionView {
+  days: number
+  cohort: number
+  retained: number
+  rate: number
+  priorWindowStart: string
+  priorWindowEnd: string
+  currentWindowStart: string
+  currentWindowEnd: string
+}
+
+/** 渠道效果行（GET /api/retention/channel-effect）。 */
+export interface ChannelEffectItem {
+  channel: string
+  total: number
+  sent: number
+  failed: number
+  distinctContacts: number
+  deliveryRate: number
+}
+
+/** 渠道效果（GET /api/retention/channel-effect）。 */
+export interface ChannelEffectView {
+  channels: ChannelEffectItem[]
+}
+
+/** 工作流效果行（GET /api/retention/workflows）。 */
+export interface WorkflowEffectItem {
+  workflowId: number
+  reached: number
+  retained: number
+  retentionRate: number
+}
+
+/** 工作流效果（GET /api/retention/workflows）。 */
+export interface WorkflowEffectView {
+  workflows: WorkflowEffectItem[]
+}
+
 /* ---------- M1：Contact / Audience ---------- */
 
 /** 规则 DSL 操作符白名单（后端 RuleCompiler.OPS）。 */

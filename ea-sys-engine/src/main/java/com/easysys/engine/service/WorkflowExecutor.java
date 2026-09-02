@@ -153,7 +153,7 @@ public class WorkflowExecutor extends AbstractDagExecutor {
 
             SendResultHolder send;
             try {
-                send = doSend(adapter, tenantId, contactId, executionId, node, templateId, content);
+                send = doSend(adapter, tenantId, contactId, executionId, node, templateId, content, contact);
             } catch (Exception e) {
                 record(executionId, tenantId, contactId, node, channel, templateId, content, null, "FAILED",
                         e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
@@ -196,10 +196,12 @@ public class WorkflowExecutor extends AbstractDagExecutor {
 
     /** 真实通道发送 + 回执查询（查询异常不阻断下发，置 SENT）。 */
     private SendResultHolder doSend(ChannelAdapter adapter, Long tenantId, Long contactId, Long executionId,
-                                    WorkflowNode node, Long templateId, String content) {
+                                    WorkflowNode node, Long templateId, String content,
+                                    Map<String, Object> contact) {
         SendResultHolder r = new SendResultHolder(adapter.send(new SendRequest(tenantId, contactId, executionId,
                 node.getNodeKey(), String.valueOf(templateId), content,
-                tenantId + ":" + contactId + ":" + executionId + ":" + node.getNodeKey())));
+                tenantId + ":" + contactId + ":" + executionId + ":" + node.getNodeKey(),
+                channelAddress(adapter.channel(), contact))));
         if (r.result().success() && r.channelMessageId() != null) {
             try {
                 r = new SendResultHolder(r.result(),
@@ -209,6 +211,16 @@ public class WorkflowExecutor extends AbstractDagExecutor {
             }
         }
         return r;
+    }
+
+    /** 通道收件地址：sms → phone、email → email；画像缺该键（含非目标通道）→ null，真实通道由适配器拒发。 */
+    private static String channelAddress(String channel, Map<String, Object> contact) {
+        String key = "sms".equals(channel) ? "phone" : "email".equals(channel) ? "email" : null;
+        if (key == null) {
+            return null;
+        }
+        Object v = contact.get(key);
+        return v == null ? null : String.valueOf(v);
     }
 
     /** 治理拦截：contact.status 非 active 或该渠道被退订 → 跳过（优先级高于一切，见架构文档 §5）。 */

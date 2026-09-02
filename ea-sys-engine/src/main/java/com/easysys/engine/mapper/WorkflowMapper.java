@@ -20,7 +20,7 @@ public interface WorkflowMapper extends BaseMapper<Workflow> {
 
     /** 测试辅助：清空触发链路相关业务表并重置自增，保证用例间隔离。绕过租户插件（多表 TRUNCATE 不被 jsqlparser 支持）。 */
     @InterceptorIgnore(tenantLine = "true")
-    @Update("TRUNCATE delivery_record, template, execution_node_state, execution, workflow_edge, " +
+    @Update("TRUNCATE channel_config, delivery_record, template, execution_node_state, execution, workflow_edge, " +
             "workflow_node, workflow, contact_tag, contact_attribute, contact, " +
             "audience_snapshot_member, audience_snapshot, audience, audit_log, layer_strategy, event " +
             "RESTART IDENTITY CASCADE")

@@ -38,6 +38,9 @@ easysys:
   frequency:
     daily-cap: 10000
     user-window-hours: 24
+  channel:
+    # 通道凭据加密口令：AES（AesBytesEncryptor）派生，生产必须经环境变量 CHANNEL_ENCRYPT_PASSWORD 覆盖。
+    encrypt-password: ${CHANNEL_ENCRYPT_PASSWORD:ea-sys-dev-channel-key}
   agent:
     llm:
       # LLM 主提供方（Token Plan 套餐专属 OpenAI 兼容端点）。enabled 缺省 false 时执行器保持确定性 RuleModel。

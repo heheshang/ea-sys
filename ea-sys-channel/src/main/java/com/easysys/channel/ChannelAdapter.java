@@ -15,8 +15,10 @@ public interface ChannelAdapter {
     /** 查询回执状态 */
     Status queryStatus(String channelMessageId);
 
+    /** contactId 的通道收件地址：sms → phone、email → email；联系人缺地址时为 null，由适配器决定行为（真实通道拒发，console 忽略）。 */
     record SendRequest(Long tenantId, Long contactId, Long executionId, String nodeKey,
-                       String templateId, String content, String idempotencyKey) {
+                       String templateId, String content, String idempotencyKey,
+                       String channelAddress) {
     }
 
     record SendResult(boolean success, String channelMessageId, String error) {

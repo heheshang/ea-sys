@@ -20,7 +20,8 @@ import java.util.Set;
 @Configuration
 public class MybatisPlusConfig {
 
-    private static final Set<String> IGNORE_TABLES = Set.of("tenant", "sys_user");
+    // audience_snapshot_member 无 tenant_id 列：隔离经 snapshot(tenant_id) 间接保证
+    private static final Set<String> IGNORE_TABLES = Set.of("tenant", "sys_user", "audience_snapshot_member");
 
     @Bean
     public MybatisPlusInterceptor mybatisPlusInterceptor() {

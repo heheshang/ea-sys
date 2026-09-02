@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.easysys.api.mapper.AudienceMapper">
+
+    <!-- 人群分页 + 最近快照摘要。自定义 SQL 不走 MP 租户插件，tenant 条件手写。 -->
+    <select id="selectAudiencePage" resultType="com.easysys.api.dto.audience.AudienceRow">
+        SELECT a.id            AS id,
+               a.name          AS name,
+               a.rule          AS rule,
+               a.version       AS version,
+               a.status        AS status,
+               a.created_by    AS createdBy,
+               a.created_at    AS createdAt,
+               a.updated_at    AS updatedAt,
+               ls.id           AS latestSnapshotId,
+               ls.status       AS latestSnapshotStatus,
+               ls.member_count AS latestSnapshotMemberCount,
+               ls.executed_at  AS latestSnapshotExecutedAt
+        FROM audience a
+        LEFT JOIN LATERAL (
+            SELECT s.id, s.status, s.member_count, s.executed_at
+            FROM audience_snapshot s
+            WHERE s.audience_id = a.id AND s.deleted = FALSE
+            ORDER BY s.executed_at DESC
+            LIMIT 1
+        ) ls ON TRUE
+        WHERE a.tenant_id = #{tenantId} AND a.deleted = FALSE
+        ORDER BY a.updated_at DESC
+    </select>
+</mapper>

@@ -20,6 +20,10 @@ mybatis-plus:
     map-underscore-to-camel-case: true
   global-config:
     banner: false
+    db-config:
+      logic-delete-field: deleted
+      logic-delete-value: true
+      logic-not-delete-value: false
 
 app:
   jwt:

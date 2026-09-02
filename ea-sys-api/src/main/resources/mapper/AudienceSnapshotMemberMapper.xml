@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.easysys.api.mapper.AudienceSnapshotMemberMapper">
+
+    <!-- 快照成员分页预览。成员表无 tenant_id，归属经调用方校验快照后由 tenantId 防御过滤。 -->
+    <select id="selectMembers" resultType="com.easysys.api.dto.audience.MemberView">
+        SELECT m.contact_id AS contactId,
+               c.external_id AS externalId,
+               c.phone,
+               c.email,
+               c.status
+        FROM audience_snapshot_member m
+        JOIN contact c ON c.id = m.contact_id
+        WHERE m.snapshot_id = #{snapshotId}
+          AND c.tenant_id = #{tenantId}
+          AND c.deleted = FALSE
+        ORDER BY m.contact_id
+    </select>
+</mapper>

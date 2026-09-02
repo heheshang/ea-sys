@@ -24,6 +24,15 @@ public final class TenantContext {
         return info == null ? null : info.tenantId();
     }
 
+    /** 无租户上下文直接抛错：业务数据写入/读取必须发生在租户上下文中。 */
+    public static Long require() {
+        Long tid = tenantId();
+        if (tid == null) {
+            throw new IllegalStateException("租户上下文缺失：请求未携带租户信息");
+        }
+        return tid;
+    }
+
     public static void clear() {
         HOLDER.remove();
     }

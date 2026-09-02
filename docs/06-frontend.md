@@ -1,16 +1,16 @@
-# 前端界面设计（React + React Flow）
+# 前端界面设计（Vue 3 + TypeScript + Element Plus）
 
 ## 1. 技术选型
 
 | 项 | 选型 | 说明 |
 |---|---|---|
-| 框架 | React 18 + TypeScript + Vite | |
-| DAG 画布 | @xyflow/react (React Flow v12) | 拖拽节点/连线、mini-map、缩放平移、自定义节点 |
-| 状态管理 | zustand（画布本地态）+ TanStack Query（服务端数据）| 画布交互高频本地化，服务数据缓存化 |
-| UI 组件库 | Ant Design（决策点：国内 SaaS 事实标准，生态最全；备选 Semi Design）| |
-| 图表 | ECharts | 留存曲线、漏斗、渠道效果 |
-| 路由/权限 | React Router + 路由守卫 + 按钮级权限（对接 RBAC）| 运营 / 审核员 / 管理员 |
-| 自动布局 | dagre | 工作流导入自动排布 |
+| 框架 | Vue 3 + TypeScript + Vite | 用户指定 |
+| DAG 画布 | @vue-flow/core（Vue Flow）| xyflow 官方 Vue 移植（与 React Flow 同 API 家族）；配套 @vue-flow/minimap、@vue-flow/controls、@vue-flow/node-resizer |
+| 状态管理 | Pinia（画布本地态）+ @tanstack/vue-query（服务端数据）| 画布交互高频本地化，服务数据缓存化 |
+| UI 组件库 | Element Plus | 用户指定 |
+| 图表 | ECharts + vue-echarts | 留存曲线、漏斗、渠道效果 |
+| 路由/权限 | vue-router + 路由守卫 + 按钮级权限指令（对接 RBAC）| 运营 / 审核员 / 管理员 |
+| 自动布局 | dagre（@dagrejs/dagre）| 工作流导入自动排布 |
 
 ## 2. 页面结构
 

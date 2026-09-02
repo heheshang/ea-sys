@@ -22,7 +22,7 @@
 | 缓存 / 锁 / 限流 | Redis |
 | 消息队列 | RocketMQ 5.x（起步可用 Redis Streams）|
 | 智能体 | AgentScope Java 2.0 |
-| 前端 | React + React Flow（DAG 画布）|
+| 前端 | Vue 3 + TypeScript + Element Plus（DAG 画布 Vue Flow）|
 | 触达通道 | 短信 / 邮件 / App 推送（微信通道预留 SPI 扩展位）|
 
 ## 里程碑

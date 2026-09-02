@@ -9,7 +9,7 @@
 ```mermaid
 flowchart LR
     subgraph 前端
-      Canvas[DAG 画布<br/>React Flow]
+      Canvas[DAG 画布<br/>Vue Flow]
       Audit[人群管理]
       Board[留存看板]
     end

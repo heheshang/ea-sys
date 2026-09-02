@@ -243,6 +243,62 @@ export interface WorkflowEffectView {
   workflows: WorkflowEffectItem[]
 }
 
+/* ---------- M4：Agent 智能体 ---------- */
+
+/** 分层策略视图（GET /api/agent/strategies）。strategy = 完整分层文档（JsonNode）。 */
+export interface StrategyView {
+  id: number
+  name: string
+  dimensions: unknown
+  routeOrder: string[] | unknown
+  strategy: unknown
+  source: string
+  status: string
+  strategyVersion: string
+  confidence: number
+  createdBy: string
+  createdAt: string
+  publishedAt: string | null
+}
+
+/** 生成分层策略请求（POST /api/agent/strategies）。 */
+export interface StrategyRequest {
+  name: string
+  strategyVersion?: string
+  routeOrder?: string[]
+}
+
+/** 路由预览请求（POST /api/agent/route-preview）。 */
+export interface RoutePreviewRequest {
+  contactId: number
+  routeOrder?: string[]
+}
+
+/** 路由预览结果：近 24h 触达渠道 + 重排后顺序。 */
+export interface RoutePreviewView {
+  contactId: number
+  touched: string[]
+  reordered: string[]
+  unchanged: boolean
+}
+
+/** 流失扫描请求（POST /api/agent/churn/scan）。 */
+export interface ChurnScanRequest {
+  audienceSnapshotId: number
+  inactiveDays: number
+}
+
+/** 流失扫描结果。 */
+export interface ChurnScanView {
+  audienceSnapshotId: number
+  thresholdDays: number
+  scanned: number
+  high: number
+  medium: number
+  low: number
+  updatedAttributes: number
+}
+
 /* ---------- M1：Contact / Audience ---------- */
 
 /** 规则 DSL 操作符白名单（后端 RuleCompiler.OPS）。 */

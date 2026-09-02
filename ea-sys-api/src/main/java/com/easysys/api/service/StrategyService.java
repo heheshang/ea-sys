@@ -51,7 +51,8 @@ public class StrategyService {
     public StrategyView generate(StrategyRequest req, String operator) {
         Long tenantId = TenantContext.require();
         ObjectNode input = json.createObjectNode();
-        String version = req.strategyVersion() == null || req.strategyVersion().isBlank() ? "v1" : req.strategyVersion().trim();
+        boolean autoVersion = req.strategyVersion() == null || req.strategyVersion().isBlank();
+        String version = autoVersion ? epochVersion() : req.strategyVersion().trim();
         input.put("strategy_version", version);
         ArrayNode order = input.putArray("route_order");
         if (req.routeOrder() != null) {
@@ -187,6 +188,11 @@ public class StrategyService {
             throw new BizException(ErrorCode.NOT_FOUND, "策略不存在: " + id);
         }
         return s;
+    }
+
+    /** 未指定版本时自动生成：v+epoch 毫秒（唯一约束 uq_layer_strategy_tenant_version 防碰撞）。 */
+    private String epochVersion() {
+        return "v" + System.currentTimeMillis();
     }
 
     private StrategyView toView(LayerStrategy s) {

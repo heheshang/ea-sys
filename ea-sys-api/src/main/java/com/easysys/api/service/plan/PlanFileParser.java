@@ -95,8 +95,9 @@ public class PlanFileParser {
     private PlanDocument.PlanOverview readOverview(Sheet sheet) {
         Map<String, Integer> cols = headerIndex(sheet, 0, OVERVIEW_COLS);
         Row data = sheet.getRow(1);
-        if (data == null) {
-            throw new BizException(ErrorCode.BAD_REQUEST, "[计划概览] 缺少数据行");
+        if (data == null || isBlankRow(data)) {
+            throw new BizException(ErrorCode.BAD_REQUEST,
+                    "模板未填写：请在「计划概览」第 2 行填写计划内容后导入");
         }
         String planName = value(data, cols, "计划名称", 2);
         String audience = value(data, cols, "目标人群", 2);
@@ -130,7 +131,8 @@ public class PlanFileParser {
                     frequencyLimit, remark));
         }
         if (rows.isEmpty()) {
-            throw new BizException(ErrorCode.BAD_REQUEST, "[触达计划] 缺少路由数据行");
+            throw new BizException(ErrorCode.BAD_REQUEST,
+                    "模板未填写：请在「触达计划」填写至少一行触达路由");
         }
         return rows;
     }
@@ -190,6 +192,10 @@ public class PlanFileParser {
     }
 
     private PlanDocument.PlanOverview readOverviewCsv(List<List<String>> rows) {
+        if (rows.size() < 2) {
+            throw new BizException(ErrorCode.BAD_REQUEST,
+                    "模板未填写：请在「计划概览」填写计划内容后导入");
+        }
         Map<String, Integer> cols = headerIndex(rows.get(0), OVERVIEW_COLS, 0);
         List<String> data = rows.get(1);
         String planName = value(data, cols, "计划名称", 1);
@@ -222,7 +228,8 @@ public class PlanFileParser {
                     frequencyLimit, remark));
         }
         if (out.isEmpty()) {
-            throw new BizException(ErrorCode.BAD_REQUEST, "[触达计划] 缺少路由数据行");
+            throw new BizException(ErrorCode.BAD_REQUEST,
+                    "模板未填写：请在「触达计划」填写至少一行触达路由");
         }
         return out;
     }

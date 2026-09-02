@@ -207,6 +207,8 @@ public class PlanValidationService {
     }
 
     private byte[] xlsxTemplate() {
+        // 空白填写模板：仅表头 + 空数据行，无示例行（示例参考 docs/07-plan-template.md）。
+        // 示例行会引用租户不存在的模板/通道，原样导入必然校验 BLOCKED；空白模板导入则给出「模板未填写」引导。
         try (Workbook wb = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             Sheet overview = wb.createSheet("计划概览");
             overview.createRow(0).createCell(0).setCellValue("计划名称");
@@ -216,11 +218,7 @@ public class PlanValidationService {
             overview.getRow(0).createCell(4).setCellValue("事件名");
             overview.getRow(0).createCell(5).setCellValue("时区");
             overview.getRow(0).createCell(6).setCellValue("预算上限");
-            Row ovRow = overview.createRow(1);
-            String[] ovSample = {"618 大促召回", "近 30 天未购会员", "TIMED", "0 0 9 * * 1", "", "Asia/Shanghai", "5000"};
-            for (int c = 0; c < ovSample.length; c++) {
-                ovRow.createCell(c).setCellValue(ovSample[c]);
-            }
+            overview.createRow(1);
 
             Sheet routes = wb.createSheet("触达计划");
             String[] routeHead = {"人群分层", "通道", "顺序", "时刻/延迟", "消息模板", "单用户频率上限", "备注"};
@@ -228,16 +226,7 @@ public class PlanValidationService {
             for (int c = 0; c < routeHead.length; c++) {
                 routHead.createCell(c).setCellValue(routeHead[c]);
             }
-            String[][] routeSamples = {
-                    {"未购会员", "sms", "1", "D+0", "大促召回短信", "1", "首触短信"},
-                    {"未购会员", "email", "2", "D+1", "大促召回邮件", "", "次日补邮件"},
-            };
-            for (int r = 0; r < routeSamples.length; r++) {
-                Row row = routes.createRow(1 + r);
-                for (int c = 0; c < routeSamples[r].length; c++) {
-                    row.createCell(c).setCellValue(routeSamples[r][c]);
-                }
-            }
+            routes.createRow(1);
 
             Sheet audience = wb.createSheet("人群规则");
             String[] audHead = {"操作", "字段", "操作符", "值"};
@@ -245,22 +234,12 @@ public class PlanValidationService {
             for (int c = 0; c < audHead.length; c++) {
                 audRow.createCell(c).setCellValue(audHead[c]);
             }
-            String[] audSample = {"包含", "last_purchase_days", ">=", "30"};
-            Row audData = audience.createRow(1);
-            for (int c = 0; c < audSample.length; c++) {
-                audData.createCell(c).setCellValue(audSample[c]);
-            }
 
             Sheet copy = wb.createSheet("文案要求");
             String[] copyHead = {"通道", "模板", "要求"};
             Row copyRow = copy.createRow(0);
             for (int c = 0; c < copyHead.length; c++) {
                 copyRow.createCell(c).setCellValue(copyHead[c]);
-            }
-            String[] copySample = {"sms", "大促召回短信", "突出折扣力度，附带链接"};
-            Row copyData = copy.createRow(1);
-            for (int c = 0; c < copySample.length; c++) {
-                copyData.createCell(c).setCellValue(copySample[c]);
             }
             wb.write(out);
             return out.toByteArray();
@@ -270,20 +249,16 @@ public class PlanValidationService {
     }
 
     private String csvTemplate() {
+        // 空白填写模板：节标记 + 表头，无示例行（与 xlsx 同构；示例参考 docs/07-plan-template.md）。
         StringBuilder sb = new StringBuilder();
         sb.append("#计划概览\n");
         sb.append("计划名称,目标人群,触发方式,触发时间,事件名,时区,预算上限\n");
-        sb.append("618 大促召回,近 30 天未购会员,TIMED,0 0 9 * * 1,,Asia/Shanghai,5000\n");
         sb.append("\n#触达计划\n");
         sb.append("人群分层,通道,顺序,时刻/延迟,消息模板,单用户频率上限,备注\n");
-        sb.append("未购会员,sms,1,D+0,大促召回短信,1,首触短信\n");
-        sb.append("未购会员,email,2,D+1,大促召回邮件,,次日补邮件\n");
         sb.append("\n#人群规则\n");
         sb.append("操作,字段,操作符,值\n");
-        sb.append("包含,last_purchase_days,>=,30\n");
         sb.append("\n#文案要求\n");
         sb.append("通道,模板,要求\n");
-        sb.append("sms,大促召回短信,突出折扣力度，附带链接\n");
         return sb.toString();
     }
 }

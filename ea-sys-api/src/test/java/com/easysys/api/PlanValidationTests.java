@@ -298,7 +298,45 @@ class PlanValidationTests {
                 "PASSED");
     }
 
-    // ---------- 11. 模板下载接口 ----------
+    // ---------- 12. 空白模板原样导入 → 「模板未填写」引导（而非示例假失败） ----------
+
+    @Test
+    void emptyDownloadedTemplateGivesGuidance() throws Exception {
+        long template = createTemplate("sms", "大促召回短信", "Hi ${name!}");
+        long wf = createWorkflow("0 0 9 * * 1", null, template);
+        inTenant(() -> channelConfigService.save(T2, "sms",
+                Map.of("endpoint", "http://sms.example.com/send", "apiKey", "test-key", "signName", "营销"), true));
+
+        byte[] xlsx = mvc.perform(get("/api/plan-validation/template").param("type", "xlsx").header(AUTH, bearer()))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsByteArray();
+        mvc.perform(multipart("/api/plan-validation/{workflowId}/import", wf)
+                        .file(new MockMultipartFile("file", "plan-import-template.xlsx",
+                                MediaType.APPLICATION_OCTET_STREAM_VALUE, xlsx))
+                        .header(AUTH, bearer()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("模板未填写")));
+
+        byte[] csv = mvc.perform(get("/api/plan-validation/template").param("type", "csv").header(AUTH, bearer()))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsByteArray();
+        mvc.perform(multipart("/api/plan-validation/{workflowId}/import", wf)
+                        .file(new MockMultipartFile("file", "plan-import-template.csv",
+                                MediaType.TEXT_PLAIN_VALUE, csv))
+                        .header(AUTH, bearer()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("模板未填写")));
+
+        // 两次解析失败均落审计 FAILED
+        Long failed = inTenant(() -> agentAuditMapper.selectCount(
+                Wrappers.<AgentAudit>lambdaQuery()
+                        .eq(AgentAudit::getAgentType, "PLAN_VALIDATION")
+                        .eq(AgentAudit::getAction, "import_validate")
+                        .eq(AgentAudit::getStatus, "FAILED")));
+        assertThat(failed).isEqualTo(2L);
+    }
+
+    // ---------- 13. 模板下载接口 ----------
 
     @Test
     void downloadsTemplates() throws Exception {

@@ -952,6 +952,7 @@ onMounted(load)
             <el-link type="primary" @click="downloadPlanTemplate('xlsx')">下载 xlsx 模板</el-link>
             <el-link type="primary" @click="downloadPlanTemplate('csv')">下载 csv 模板</el-link>
           </div>
+          <div class="plan-template-hint">模板为空白填写模板（无示例行），列结构见 docs/07-plan-template.md</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -1076,6 +1077,12 @@ onMounted(load)
 .plan-template-links {
   display: flex;
   gap: 16px;
+}
+.plan-template-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.5;
 }
 .plan-summary-text {
   margin-top: 12px;

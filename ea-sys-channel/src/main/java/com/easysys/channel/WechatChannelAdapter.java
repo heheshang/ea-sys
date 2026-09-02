@@ -1,5 +1,8 @@
 package com.easysys.channel;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -20,6 +23,8 @@ import java.util.UUID;
  * 供应商协议差异（订阅消息、企业微信、不同模板字段结构）预留 doSend 为扩展点，对接时重写。
  */
 public final class WechatChannelAdapter extends ConfigurableChannelAdapter {
+
+    private static final Logger log = LoggerFactory.getLogger(WechatChannelAdapter.class);
 
     private static final String DEFAULT_BASE = "https://api.weixin.qq.com";
     private static final Duration TIMEOUT = Duration.ofSeconds(10);
@@ -56,6 +61,8 @@ public final class WechatChannelAdapter extends ConfigurableChannelAdapter {
         String base = cfg.getOrDefault("endpoint", DEFAULT_BASE);
         String token = getAccessToken(base, appId, appSecret);
         if (token == null) {
+            log.warn("[wechat] tenant={} idempotencyKey={} endpoint={} access_token 获取失败", request.tenantId(),
+                    request.idempotencyKey(), base);
             return new SendResult(false, null, "微信 access_token 获取失败");
         }
         String body = "{\"touser\":\"" + jsonEscape(openid)
@@ -74,13 +81,22 @@ public final class WechatChannelAdapter extends ConfigurableChannelAdapter {
                 String respBody = resp.body();
                 // 微信协议：HTTP 2xx 仅代表网关可达，业务成败看 errcode
                 if (respBody != null && respBody.contains("\"errcode\":0")) {
+                    log.info("[wechat] tenant={} idempotencyKey={} endpoint={} errcode=0 发送成功", request.tenantId(),
+                            request.idempotencyKey(), base);
                     return new SendResult(true, "wechat-" + UUID.randomUUID(), null);
                 }
+                log.warn("[wechat] tenant={} idempotencyKey={} endpoint={} 供应商返回 errcode: {}",
+                        request.tenantId(), request.idempotencyKey(), base, truncate(respBody));
                 return new SendResult(false, null, "微信供应商返回 errcode: " + truncate(respBody));
             }
+            log.warn("[wechat] tenant={} idempotencyKey={} endpoint={} status={} 供应商返回: {}", request.tenantId(),
+                    request.idempotencyKey(), base, resp.statusCode(), truncate(resp.body()));
             return new SendResult(false, null,
                     "微信供应商返回 " + resp.statusCode() + ": " + truncate(resp.body()));
         } catch (Exception e) {
+            log.warn("[wechat] tenant={} idempotencyKey={} endpoint={} 发送异常: {}", request.tenantId(),
+                    request.idempotencyKey(), base,
+                    e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(), e);
             return new SendResult(false, null, "微信发送失败: "
                     + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
         }
@@ -105,6 +121,8 @@ public final class WechatChannelAdapter extends ConfigurableChannelAdapter {
                 String respBody = resp.statusCode() == 200 ? resp.body() : null;
                 String token = respBody == null ? null : between(respBody, "\"access_token\":\"", "\"");
                 if (token == null || token.isBlank()) {
+                    log.warn("[wechat] endpoint={} token 接口响应异常: status={} body={}", base,
+                            resp.statusCode(), truncate(respBody));
                     return null;
                 }
                 String expiresIn = between(respBody, "\"expires_in\":", ",");

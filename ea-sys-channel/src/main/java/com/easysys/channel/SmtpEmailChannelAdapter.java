@@ -1,6 +1,8 @@
 package com.easysys.channel;
 
 import jakarta.mail.internet.MimeMessage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.mail.javamail.JavaMailSenderImpl;
 import org.springframework.mail.javamail.MimeMessageHelper;
 
@@ -14,6 +16,8 @@ import java.util.UUID;
  * 收件人为 SendRequest.channelAddress()（联系人 email）。
  */
 public final class SmtpEmailChannelAdapter extends ConfigurableChannelAdapter {
+
+    private static final Logger log = LoggerFactory.getLogger(SmtpEmailChannelAdapter.class);
 
     public SmtpEmailChannelAdapter(ChannelConfigProvider provider) {
         super(provider);
@@ -56,8 +60,13 @@ public final class SmtpEmailChannelAdapter extends ConfigurableChannelAdapter {
             helper.setSubject("ea-sys 触达通知");
             helper.setText(request.content(), false);
             sender.send(message);
+            log.info("[email] tenant={} idempotencyKey={} to={} from={} 发送成功", request.tenantId(),
+                    request.idempotencyKey(), to, from);
             return new SendResult(true, "smtp-" + UUID.randomUUID(), null);
         } catch (Exception e) {
+            log.warn("[email] tenant={} idempotencyKey={} to={} 发送异常: {}", request.tenantId(),
+                    request.idempotencyKey(), to,
+                    e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(), e);
             return new SendResult(false, null, "邮件发送失败: "
                     + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
         }

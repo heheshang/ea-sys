@@ -32,7 +32,15 @@ public abstract class ConfigurableChannelAdapter implements ChannelAdapter {
                     request.nodeKey(), request.templateId(), request.idempotencyKey(), request.content());
             return new SendResult(true, "console-" + UUID.randomUUID(), null);
         }
-        return doSend(cfg.get(), request);
+        long start = System.currentTimeMillis();
+        log.info("[channel:{}] tenant={} contact={} execution={} node={} templateId={} idempotencyKey={} 收件地址={} 开始真实下发",
+                channel(), request.tenantId(), request.contactId(), request.executionId(),
+                request.nodeKey(), request.templateId(), request.idempotencyKey(), request.channelAddress());
+        SendResult result = doSend(cfg.get(), request);
+        log.info("[channel:{}] tenant={} execution={} idempotencyKey={} 下发结果 success={} msgId={} error={} 耗时={}ms",
+                channel(), request.tenantId(), request.executionId(), request.idempotencyKey(),
+                result.success(), result.channelMessageId(), result.error(), System.currentTimeMillis() - start);
+        return result;
     }
 
     /** 凭据已就绪时的真实下发；失败必须返回 SendResult(false, null, 原因)。 */

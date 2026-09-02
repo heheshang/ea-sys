@@ -1,5 +1,8 @@
 package com.easysys.channel;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -17,6 +20,8 @@ import java.util.UUID;
  * 供应商协议差异（AKSK 签名、JSON 协议、异步回执查询）预留 doSend 为扩展点，对接具体厂商时重写。
  */
 public final class HttpSmsChannelAdapter extends ConfigurableChannelAdapter {
+
+    private static final Logger log = LoggerFactory.getLogger(HttpSmsChannelAdapter.class);
 
     private static final Duration TIMEOUT = Duration.ofSeconds(10);
 
@@ -65,11 +70,18 @@ public final class HttpSmsChannelAdapter extends ConfigurableChannelAdapter {
             HttpResponse<String> resp = http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
                 // 供应商响应中的消息 ID / 失败码解析：对接具体厂商时扩展（当前以本地 UUID 记 ID）。
+                log.info("[sms] tenant={} idempotencyKey={} endpoint={} status={} 发送成功", request.tenantId(),
+                        request.idempotencyKey(), endpoint, resp.statusCode());
                 return new SendResult(true, "sms-" + UUID.randomUUID(), null);
             }
+            log.warn("[sms] tenant={} idempotencyKey={} endpoint={} status={} 供应商返回: {}", request.tenantId(),
+                    request.idempotencyKey(), endpoint, resp.statusCode(), truncate(resp.body()));
             return new SendResult(false, null,
                     "短信供应商返回 " + resp.statusCode() + ": " + truncate(resp.body()));
         } catch (Exception e) {
+            log.warn("[sms] tenant={} idempotencyKey={} endpoint={} 发送异常: {}", request.tenantId(),
+                    request.idempotencyKey(), endpoint,
+                    e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(), e);
             return new SendResult(false, null, "短信发送失败: "
                     + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
         }

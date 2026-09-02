@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ea-sys-postgres
+    environment:
+      POSTGRES_DB: ea_sys
+      POSTGRES_USER: ea_sys
+      POSTGRES_PASSWORD: ea_sys
+    ports:
+      - "5432:5432"
+    volumes:
+      - ea-sys-pgdata:/var/lib/postgresql/data
+
+volumes:
+  ea-sys-pgdata:

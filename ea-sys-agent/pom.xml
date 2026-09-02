@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.easysys</groupId>
+    <artifactId>ea-sys-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>ea-sys-agent</artifactId>
+  <name>ea-sys-agent</name>
+  <description>智能体编排（AgentScope Java 2.0）：分层/路由/流失预警（M4）</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.easysys</groupId>
+      <artifactId>ea-sys-common</artifactId>
+    </dependency>
+  </dependencies>
+</project>

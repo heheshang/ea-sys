@@ -1,0 +1,27 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ea-sys
+  profiles:
+    default: dev
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:ea_sys}
+    username: ${DB_USER:ea_sys}
+    password: ${DB_PASSWORD:ea_sys}
+  flyway:
+    enabled: true
+  jackson:
+    time-zone: Asia/Shanghai
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+
+app:
+  jwt:
+    secret: ${JWT_SECRET:ea-sys-dev-secret-key-change-me-0123456789abcdef0123456789abcdef}
+    expire-hours: 24

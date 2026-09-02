@@ -1,10 +1,11 @@
 package com.easysys.api.service;
 
 import com.easysys.agent.AgentCall;
-import com.easysys.agent.AgentExecutor;
 import com.easysys.agent.AgentOutcome;
+import com.easysys.agent.AgentPolicy;
 import com.easysys.agent.AgentRunConfig;
 import com.easysys.agent.DeterministicChurnPlanner;
+import io.agentscope.harness.agent.HarnessAgent;
 import com.easysys.api.dto.agent.ChurnScanRequest;
 import com.easysys.api.dto.agent.ChurnScanView;
 import com.easysys.api.entity.AgentAudit;
@@ -35,7 +36,7 @@ import java.util.Map;
 /**
  * 流失预警：对快照成员按「N 天未活跃 = HIGH」规则批量评估（CHURN Agent，确定性降级即主实现）。
  * 活跃信号 = 行为事件（event 表）；最近事件距今 &gt; 阈值 → HIGH。结果回写 contact_attribute.churn_risk（jsonb 字符串），
- * 全程走 AgentExecutor（schema 校验 + 一次性审计），与分层/路由同一治理路径。
+ * 全程走 AgentPolicy（HarnessAgent 承载执行，schema 校验 + 一次性审计），与分层/路由同一治理路径。
  */
 @Service
 public class ChurnService {
@@ -49,17 +50,20 @@ public class ChurnService {
     private final ContactAttributeMapper attributeMapper;
     private final AgentAuditMapper auditLogMapper;
     private final LayerTagger layerTagger;
+    private final HarnessAgent churnScanAgent;
     private final ObjectMapper json;
 
     public ChurnService(AudienceSnapshotMapper snapshotMapper, AudienceSnapshotMemberMapper memberMapper,
                         EventMapper eventMapper, ContactAttributeMapper attributeMapper,
-                        AgentAuditMapper auditLogMapper, LayerTagger layerTagger, ObjectMapper json) {
+                        AgentAuditMapper auditLogMapper, LayerTagger layerTagger,
+                        HarnessAgent churnScanAgent, ObjectMapper json) {
         this.snapshotMapper = snapshotMapper;
         this.memberMapper = memberMapper;
         this.eventMapper = eventMapper;
         this.attributeMapper = attributeMapper;
         this.auditLogMapper = auditLogMapper;
         this.layerTagger = layerTagger;
+        this.churnScanAgent = churnScanAgent;
         this.json = json;
     }
 
@@ -93,7 +97,8 @@ public class ChurnService {
         input.put("threshold_days", threshold);
 
         DeterministicChurnPlanner planner = new DeterministicChurnPlanner();
-        AgentOutcome outcome = AgentExecutor.run(planner, planner, "churn_scan", input, AgentRunConfig.defaults());
+        AgentOutcome outcome = AgentPolicy.run(churnScanAgent, planner, planner,
+                "churn_scan", input, AgentRunConfig.defaults());
         if (outcome.output() == null) {
             throw new BizException(ErrorCode.BAD_REQUEST, "流失风险评估失败（确定性兜底也失效）: " + outcome.reason());
         }

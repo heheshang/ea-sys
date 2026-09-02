@@ -1,9 +1,10 @@
 package com.easysys.api.service;
 
-import com.easysys.agent.AgentExecutor;
 import com.easysys.agent.AgentOutcome;
+import com.easysys.agent.AgentPolicy;
 import com.easysys.agent.AgentRunConfig;
 import com.easysys.agent.WorkflowPlanner;
+import io.agentscope.harness.agent.HarnessAgent;
 import com.easysys.api.dto.audience.AudienceResponse;
 import com.easysys.api.dto.channel.ChannelConfigView;
 import com.easysys.api.dto.template.TemplateView;
@@ -36,11 +37,11 @@ import java.util.function.Supplier;
  * AI 创建工作流编排（WORKFLOW agent）：
  * <ol>
  *   <li>真实执行租户数据工具（list_channels / search_templates / search_audiences）并记录时间线；</li>
- *   <li>AgentExecutor 跑确定性规划器 WorkflowPlanner（无 I/O 纯解析）→ schema 校验 + 置信度闸门 + 审计；</li>
+ *   <li>AgentPolicy 经 HarnessAgent 跑确定性规划器 WorkflowPlanner（无 I/O 纯解析）→ schema 校验 + 置信度闸门 + 审计；</li>
  *   <li>复用引擎 DagValidator 校验生成的 DAG 结构（validate_dag 工具记录）；</li>
  *   <li>产出「草稿」—— 不落库，前端人工审核后走既有保存/发布/干跑链路。</li>
  * </ol>
- * 工具执行不进 AgentExecutor：规划器保持无 I/O 纯解析，与 LAYER/ROUTER/CHURN 链路零耦合。
+ * 工具执行不进 HarnessAgent 批处理面：规划器保持无 I/O 纯解析，与 LAYER/CHURN 链路零耦合。
  */
 @Service
 public class AiWorkflowService {
@@ -52,6 +53,7 @@ public class AiWorkflowService {
     private final ChannelConfigService channelConfigService;
     private final DagValidator dagValidator;
     private final AgentAuditMapper auditMapper;
+    private final HarnessAgent workflowGenerateAgent;
     private final ObjectMapper json;
 
     public AiWorkflowService(TemplateService templateService,
@@ -59,12 +61,14 @@ public class AiWorkflowService {
                              ChannelConfigService channelConfigService,
                              DagValidator dagValidator,
                              AgentAuditMapper auditMapper,
+                             HarnessAgent workflowGenerateAgent,
                              ObjectMapper json) {
         this.templateService = templateService;
         this.audienceService = audienceService;
         this.channelConfigService = channelConfigService;
         this.dagValidator = dagValidator;
         this.auditMapper = auditMapper;
+        this.workflowGenerateAgent = workflowGenerateAgent;
         this.json = json;
     }
 
@@ -104,7 +108,7 @@ public class AiWorkflowService {
             o.put("rule", a.rule());
         }
 
-        // 工具 4：build_dag —— 确定性规划器（AgentExecutor 承载：结构校验 + 置信度闸门）
+        // 工具 4：build_dag —— 确定性规划器（AgentPolicy 经 HarnessAgent 承载：结构校验 + 置信度闸门）
         WorkflowPlanner planner = new WorkflowPlanner();
         AgentOutcome outcome = runPlanner(toolCalls, input);
         JsonNode out = outcome.output();
@@ -211,7 +215,7 @@ public class AiWorkflowService {
     private AgentOutcome runPlanner(List<AiToolCallView> calls, JsonNode input) {
         long start = System.currentTimeMillis();
         try {
-            AgentOutcome outcome = AgentExecutor.run(new WorkflowPlanner(), new WorkflowPlanner(),
+            AgentOutcome outcome = AgentPolicy.run(workflowGenerateAgent, new WorkflowPlanner(), new WorkflowPlanner(),
                     "workflow_generate", input, AgentRunConfig.defaults());
             ObjectNode args = json.createObjectNode();
             args.put("prompt", input.path("prompt").asText("").substring(0,

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.agentscope.harness.agent.HarnessAgent;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -11,14 +12,16 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 流失预警规则规划器：规则语义（从未活跃/超期未活跃 → HIGH）与 AgentExecutor 闸门
- * （schema 校验 + 置信度）同路径生效，批量输出自洽通过 churnScanSchema。
+ * 流失预警规则规划器：规则语义（从未活跃/超期未活跃 → HIGH）与 AgentPolicy 闸门
+ * （schema 校验 + 置信度，HarnessAgent 承载执行）同路径生效，批量输出自洽通过 churnScanSchema。
  */
 class DeterministicChurnPlannerTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final DeterministicChurnPlanner PLANNER = new DeterministicChurnPlanner();
     private static final AgentRunConfig CFG = AgentRunConfig.defaults();
+    /** 批处理 harness（确定性模型位），与生产装配同构。 */
+    private static final HarnessAgent AGENT = BatchTestAgents.deterministic(PLANNER);
 
     @Test
     void ruleNeverActiveIsHighRisk() {
@@ -60,7 +63,7 @@ class DeterministicChurnPlannerTest {
         active.put("inactive_days", 2);
         input.put("threshold_days", 30);
 
-        AgentOutcome outcome = AgentExecutor.run(PLANNER, PLANNER, "churn_scan", input, CFG);
+        AgentOutcome outcome = AgentPolicy.run(AGENT, PLANNER, PLANNER, "churn_scan", input, CFG);
         assertEquals("SUCCESS", outcome.status());
         assertNotNull(outcome.output());
         assertTrue(LayerSchemas.churnScanSchema().contains("$schema"));

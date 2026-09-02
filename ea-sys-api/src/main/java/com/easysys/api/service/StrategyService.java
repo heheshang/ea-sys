@@ -2,9 +2,10 @@ package com.easysys.api.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.easysys.agent.AgentOutcome;
-import com.easysys.agent.DeterministicLayerPlanner;
-import com.easysys.agent.AgentExecutor;
+import com.easysys.agent.AgentPolicy;
 import com.easysys.agent.AgentRunConfig;
+import com.easysys.agent.DeterministicLayerPlanner;
+import io.agentscope.harness.agent.HarnessAgent;
 import com.easysys.api.dto.agent.StrategyRequest;
 import com.easysys.api.dto.agent.StrategyUpdateRequest;
 import com.easysys.api.dto.agent.StrategyView;
@@ -28,7 +29,7 @@ import java.util.List;
 
 /**
  * 分层策略（LAYER agent）：
- * - 生成 = AgentExecutor.run(确定性规划器, 同规划器兜底) → schema 校验 + 置信度闸门 + 审计
+ * - 生成 = AgentPolicy.run(HarnessAgent 承载, 确定性规划器, 同规划器兜底) → schema 校验 + 置信度闸门 + 审计
  * - 版本/发布闸门：draft → published；同租户可多份历史发布，生效取最近 published_at
  * - 审计持久化到 audit_log（strategy_generate 动作）
  */
@@ -39,11 +40,14 @@ public class StrategyService {
 
     private final LayerStrategyMapper strategyMapper;
     private final AgentAuditMapper auditMapper;
+    private final HarnessAgent layerStrategyAgent;
     private final ObjectMapper json;
 
-    public StrategyService(LayerStrategyMapper strategyMapper, AgentAuditMapper auditMapper, ObjectMapper json) {
+    public StrategyService(LayerStrategyMapper strategyMapper, AgentAuditMapper auditMapper,
+                           HarnessAgent layerStrategyAgent, ObjectMapper json) {
         this.strategyMapper = strategyMapper;
         this.auditMapper = auditMapper;
+        this.layerStrategyAgent = layerStrategyAgent;
         this.json = json;
     }
 
@@ -68,7 +72,8 @@ public class StrategyService {
         }
 
         DeterministicLayerPlanner planner = new DeterministicLayerPlanner();
-        AgentOutcome outcome = AgentExecutor.run(planner, planner, "strategy_generate", input, AgentRunConfig.defaults());
+        AgentOutcome outcome = AgentPolicy.run(layerStrategyAgent, planner, planner,
+                "strategy_generate", input, AgentRunConfig.defaults());
         if (outcome.output() == null) {
             throw new BizException(ErrorCode.BAD_REQUEST,
                     "策略生成失败（确定性兜底也失效）: " + outcome.reason());

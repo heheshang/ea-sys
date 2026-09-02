@@ -3,6 +3,7 @@ package com.easysys.api.controller;
 import com.easysys.agent.WorkflowDialoguePolicy;
 import com.easysys.api.dto.workflow.AiChatRequest;
 import com.easysys.api.service.AiWorkflowService;
+import org.springframework.beans.factory.annotation.Qualifier;
 import com.easysys.common.tenant.TenantContext;
 import com.easysys.common.web.BizException;
 import com.easysys.common.web.ErrorCode;
@@ -73,7 +74,8 @@ public class WorkflowAiController {
     private final AiWorkflowService aiWorkflowService;
     private final ObjectMapper json;
 
-    public WorkflowAiController(HarnessAgent agent, AiWorkflowService aiWorkflowService, ObjectMapper json) {
+    public WorkflowAiController(@Qualifier("workflowDialogueAgent") HarnessAgent agent,
+                                AiWorkflowService aiWorkflowService, ObjectMapper json) {
         this.agent = agent;
         this.aiWorkflowService = aiWorkflowService;
         this.json = json;

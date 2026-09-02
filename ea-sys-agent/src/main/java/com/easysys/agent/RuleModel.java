@@ -18,11 +18,12 @@ import java.util.List;
  * AgentScope Java 2.0 确定性模型位：把策略规则（StrategyAgent.plan）包成框架 Model，
  * 主提供方逻辑经 ReActAgent 调用链执行，输出 JSON 由框架 native 结构化路径解析。
  *
- * <p>框架承载点（docs/04-agent-design.md §6）：main provider 不再是自研线程池直调，
- * 而是以确定性 Model 身份进入 AgentScope 的 ReActAgent 执行管道 —— 同一模型位
- * M6 换真实 LLM（ModelRegistry.resolve(...)）时编排/审计/降级链路零改动。</p>
+ * <p>框架承载点（docs/04-agent-design.md §6）：main provider 以确定性 Model 身份进入
+ * HarnessAgent 执行管道（批处理三路统一由 {@link AgentPolicy} 编排，对话面由
+ * WorkflowDialogueModel 承载会话）—— 同一模型位换真实 LLM（ModelRegistry.resolve(...)）
+ * 时编排/审计/降级链路零改动。</p>
  *
- * <p>规则抛出的异常原样经 Flux.error 传播（AgentExecutor 侧 catch 后以
+ * <p>规则抛出的异常原样经 Flux.error 传播（AgentPolicy 侧 catch 后以
  * provider_error:{SimpleName} 落入 fallback，测试断言兼容）。</p>
  */
 public class RuleModel extends ChatModelBase {

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.agentscope.harness.agent.HarnessAgent;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -13,14 +14,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 工作流规划器（WORKFLOW agent)：意图解析（触发/通道/延迟/模板/人群）与
- * AgentExecutor 闸门（schema 校验 + 置信度）全路径生效；输出为草稿语义，
- * 未匹配项留空并在计划摘要中提示人工确认。
+ * AgentPolicy 闸门（schema 校验 + 置信度，HarnessAgent 承载执行）全路径生效；
+ * 输出为草稿语义，未匹配项留空并在计划摘要中提示人工确认。
  */
 class WorkflowPlannerTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final WorkflowPlanner PLANNER = new WorkflowPlanner();
     private static final AgentRunConfig CFG = AgentRunConfig.defaults();
+    /** 批处理 harness（确定性模型位），与生产装配同构。 */
+    private static final HarnessAgent AGENT = BatchTestAgents.deterministic(PLANNER);
 
     /** 输入快照：2 模板（短信 618 大促 / 邮件欢迎）+ 2 人群（近30天未购买 / 新注册）。 */
     private static ObjectNode context() {
@@ -56,7 +59,7 @@ class WorkflowPlannerTest {
         ObjectNode input = context();
         input.put("prompt", "每天上午9点向近30天未购买会员发送短信,使用 618大促通知 模板");
 
-        AgentOutcome outcome = AgentExecutor.run(PLANNER, PLANNER, "workflow_generate", input, CFG);
+        AgentOutcome outcome = AgentPolicy.run(AGENT, PLANNER, PLANNER, "workflow_generate", input, CFG);
         assertEquals("SUCCESS", outcome.status());
         assertNotNull(outcome.output());
         assertEquals(AgentType.WORKFLOW, outcome.audit().agentType());
@@ -83,7 +86,7 @@ class WorkflowPlannerTest {
         ObjectNode input = context();
         input.put("prompt", "每周一下午3点向新注册用户发送邮件,使用 新用户欢迎邮件 模板,延迟2天后再次提醒");
 
-        AgentOutcome outcome = AgentExecutor.run(PLANNER, PLANNER, "workflow_generate", input, CFG);
+        AgentOutcome outcome = AgentPolicy.run(AGENT, PLANNER, PLANNER, "workflow_generate", input, CFG);
         assertEquals("SUCCESS", outcome.status());
 
         JsonNode nodes = outcome.output().path("nodes");
@@ -109,7 +112,7 @@ class WorkflowPlannerTest {
         ObjectNode input = context();
         input.put("prompt", "每3天发送短信促销通知");
 
-        AgentOutcome outcome = AgentExecutor.run(PLANNER, PLANNER, "workflow_generate", input, CFG);
+        AgentOutcome outcome = AgentPolicy.run(AGENT, PLANNER, PLANNER, "workflow_generate", input, CFG);
         JsonNode trigger = outcome.output().path("nodes").get(0);
         // 3 未被 TIME 误认作小时，也不产生 DELAY 节点
         assertEquals("0 0 9 */3 * ?", trigger.path("config").path("cron").asText());
@@ -126,7 +129,7 @@ class WorkflowPlannerTest {
     void dPlusOneDelayParsedAsDays() {
         ObjectNode input = context();
         input.put("prompt", "发送短信通知 D+1");
-        JsonNode delay = AgentExecutor.run(PLANNER, PLANNER, "workflow_generate", input, CFG)
+        JsonNode delay = AgentPolicy.run(AGENT, PLANNER, PLANNER, "workflow_generate", input, CFG)
                 .output().path("nodes").get(1);
         assertEquals("DELAY", delay.path("type").asText());
         assertEquals(24 * 60L, delay.path("config").path("minutes").asLong());
@@ -137,7 +140,7 @@ class WorkflowPlannerTest {
         ObjectNode input = context();
         input.put("prompt", "每天向高价值客户发送专属优惠");
 
-        AgentOutcome outcome = AgentExecutor.run(PLANNER, PLANNER, "workflow_generate", input, CFG);
+        AgentOutcome outcome = AgentPolicy.run(AGENT, PLANNER, PLANNER, "workflow_generate", input, CFG);
         JsonNode out = outcome.output();
         JsonNode hint = out.path("audienceHint");
         assertFalse(hint.path("matched").asBoolean());
@@ -154,7 +157,7 @@ class WorkflowPlannerTest {
         ObjectNode input = context();
         input.put("prompt", "用户下单后向近30天未购买会员发送短信");
 
-        AgentOutcome outcome = AgentExecutor.run(PLANNER, PLANNER, "workflow_generate", input, CFG);
+        AgentOutcome outcome = AgentPolicy.run(AGENT, PLANNER, PLANNER, "workflow_generate", input, CFG);
         JsonNode out = outcome.output();
         assertEquals("SCHEDULED", out.path("nodes").get(0).path("config").path("triggerType").asText());
         assertTrue(out.path("planSummary").asText().contains("事件语义"));
@@ -165,7 +168,7 @@ class WorkflowPlannerTest {
         ObjectNode input = context();
         input.put("prompt", "每天发一条运营通知");
 
-        AgentOutcome outcome = AgentExecutor.run(PLANNER, PLANNER, "workflow_generate", input, CFG);
+        AgentOutcome outcome = AgentPolicy.run(AGENT, PLANNER, PLANNER, "workflow_generate", input, CFG);
         JsonNode nodes = outcome.output().path("nodes");
         assertEquals("action_sms", nodes.get(1).path("key").asText());
         assertTrue(outcome.output().path("planSummary").asText().contains("默认使用短信"));
@@ -176,7 +179,7 @@ class WorkflowPlannerTest {
         ObjectNode input = context();
         input.put("prompt", "先发邮件再发短信,针对新注册用户,模板分别用 新用户欢迎邮件 和 618大促通知");
 
-        AgentOutcome outcome = AgentExecutor.run(PLANNER, PLANNER, "workflow_generate", input, CFG);
+        AgentOutcome outcome = AgentPolicy.run(AGENT, PLANNER, PLANNER, "workflow_generate", input, CFG);
         JsonNode nodes = outcome.output().path("nodes");
         // 非延迟线性链：trigger → action_email → action_sms → end
         assertEquals("action_email", nodes.get(1).path("key").asText());

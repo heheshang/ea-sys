@@ -69,9 +69,16 @@ export interface SaveWorkflowRequest {
   edges: WorkflowEdgeSpec[]
 }
 
-/** AI 创建工作流请求（AiGenerateRequest）。 */
-export interface AiGenerateRequest {
-  prompt: string
+/** AI 对话确认（HITL：生成草稿前必须用户确认）。 */
+export interface AiChatConfirm {
+  confirmed: boolean
+}
+
+/** AI 流式对话请求（ai-chat SSE）：confirm 为空时若后端有挂起确认则 400。 */
+export interface AiChatRequest {
+  message: string
+  sessionId: string
+  confirm?: AiChatConfirm
 }
 
 /** AI 工具调用记录（AiToolCallView：真实执行过的租户查询/生成步骤）。 */

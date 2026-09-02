@@ -1,6 +1,6 @@
 import { http } from './http'
 import type {
-  AiGenerateResponse,
+  AiChatRequest,
   ApiResponse,
   DryRunRequest,
   DryRunResponse,
@@ -20,10 +20,48 @@ export async function listWorkflows(): Promise<WorkflowSummary[]> {
   return data.data
 }
 
-/** POST /api/workflows/ai-generate —— AI 创建：自然语言 → DAG 草稿（不落库，人工审核后保存）。 */
-export async function aiGenerate(prompt: string): Promise<AiGenerateResponse> {
-  const { data } = await http.post<ApiResponse<AiGenerateResponse>>('/workflows/ai-generate', { prompt })
-  return data.data
+/** SSE 事件帧（与后端 SseEmitter 下发字段一致）。 */
+export interface AiChatEvent {
+  type: string
+  [k: string]: unknown
+}
+
+/**
+ * POST /api/workflows/ai-chat —— 流式对话创建：SSE 逐帧回调 onEvent。
+ * 事件流为 `data: {json}\n\n` 帧；文本增量/工具状态/确认卡片/草稿卡都从帧还原。
+ */
+export async function aiChat(
+  req: AiChatRequest,
+  onEvent: (ev: AiChatEvent) => void,
+): Promise<void> {
+  let cursor = 0
+  await http.post('/workflows/ai-chat', req, {
+    responseType: 'text',
+    timeout: 0,
+    onDownloadProgress: (e) => {
+      const current: unknown = e.event?.currentTarget
+      const text =
+        current != null &&
+        typeof current === 'object' &&
+        'responseText' in current &&
+        typeof current.responseText === 'string'
+          ? current.responseText
+          : ''
+      let idx: number
+      while ((idx = text.indexOf('\n\n', cursor)) !== -1) {
+        const frame = text.slice(cursor, idx)
+        cursor = idx + 2
+        const line = frame.split('\n').find((l) => l.startsWith('data:'))
+        if (line) {
+          try {
+            onEvent(JSON.parse(line.slice(5).trim()) as AiChatEvent)
+          } catch {
+            // 损坏/心跳帧，忽略
+          }
+        }
+      }
+    },
+  })
 }
 
 /** POST /api/workflows —— 新建画布（v1 DRAFT）。 */

@@ -208,3 +208,44 @@ flowchart LR
 **安全与治理**：上传文件是外部输入 —— 类型白名单 + 大小限制 + 文件内容只作文本数据（不进提示词指令区），输出仍受 schema 校验，防提示词注入；报告持久化（`validation_report`）可回看；解析与比对全程落 `audit_log`。
 
 **降级**：LLM 解析失败 → 提示文件格式问题或退回纯确定性解析（Excel 结构化列直接映射）；LLM 不可达不阻断发布，仅降级为确定性校验。
+
+## 10. 工作流对话创建 + HITL 确认（AI 创建）
+
+**职责**：运营人员在画布页发起对话式创建，AI 逐项查询通道 / 模板 / 人群并与用户确认后生成工作流 DAG 草稿，前端载入画布人工校对后保存。生成不自动落库、人群不自动创建（未匹配仅提示）。
+
+**承载**：`HarnessAgent`（name=workflow-dialogue）+ 确定性 `WorkflowDialogueModel`（无 LLM 可跑；模型位接入任何 LLM 同构零改动，HITL 是框架级能力）。
+
+```mermaid
+sequenceDiagram
+    participant V as 画布页(前端)
+    participant C as WorkflowAiController
+    participant A as HarnessAgent
+    participant P as WorkflowDialoguePolicy
+    V->>C: POST /api/workflows/ai-chat (SSE)
+    C->>A: streamEvents([msg], RuntimeContext)
+    A->>P: WorkflowDialogueModel 轮询 decide(history)
+    P-->>A: Reply/Query(带3个查询工具) / Draft(plan_workflow)
+    A-->>C: SSE 事件流(文本增量/工具状态)
+    C-->>V: TEXT_BLOCK_DELTA / TOOL_CALL_START / TOOL_RESULT_*
+    alt plan_workflow 需人工确认
+        A-->>C: RequireUserConfirmEvent(挂起工具调用)
+        C-->>V: REQUIRE_USER_CONFIRM(前端确认卡, 输入框禁用)
+        V->>C: POST {confirm:{confirmed:true|false}}
+        C->>A: ConfirmResult(METADATA_CONFIRM_RESULTS)
+        A-->>C: 恢复执行 → TOOL_RESULT_* / AGENT_RESULT
+        C-->>V: draft_ready(草稿卡) 或「已取消」文本
+    end
+    V->>V: 载入画布(人工校对) → 保存
+```
+
+**策略决策**（WorkflowDialoguePolicy，确定性规则，分支顺序）：
+
+1. 末词命中取消词 → 回复「已取消，可继续补充需求」；
+2. 需求文本画像齐备（触发显式 + 人群已表达）→ Draft（plan_workflow）；
+3. 缺触发只追问触发；缺人群引用已检索人群前 5 名；均缺先跑 3 个查询工具。
+
+**HITL 确认闸门**：模型输出 `ToolUseBlock(plan_workflow)` → 框架 `checkPermissions` 返回 ASK → `RequireUserConfirmEvent`；controller 缓存原工具调用块（session 维度 pendingAsks），确认消息走 `Msg` 元数据通道（不落对话上下文），恢复执行不重走模型输出工具。挂起期间前端禁输入框，后端对未确认消息返回 400 防御。
+
+**SSE 事件语义**：统一 `{type: AgentEventType.name()}`（大写枚举名），关键事件：`TEXT_BLOCK_DELTA`（打字机增量）、`TOOL_CALL_START` / `TOOL_RESULT_TEXT_DELTA` / `TOOL_RESULT_END`（工具行状态）、`REQUIRE_USER_CONFIRM`（确认卡）、`USER_CONFIRM_RESULT`（清除确认态；拒绝时前端回标挂起工具行「已取消」）、`AGENT_RESULT`（结语）、自定义 `draft_ready`（后端从 plan_workflow 工具输出增量重建草稿 JSON）。
+
+**数据流与安全**：租户上下文 `TenantContext` 为 ThreadLocal，工具线程经 `RuntimeContext` 类型化属性注入（`withTenant + Mono.defer`）；对话会话状态第一版用 JsonFileAgentStateStore（生产可切 agentscope-extensions-redis 的 RedisAgentStateStore）；工作流草稿不落库，人工保存走既有审计。

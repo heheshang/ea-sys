@@ -108,6 +108,12 @@
         <artifactId>agentscope-core</artifactId>
         <version>${agentscope.version}</version>
       </dependency>
+      <!-- 对话式创建工作流：HarnessAgent 承载会话持久化 + ReAct 工具循环 + HITL（传递依赖仅 core/jackson-yaml/commons-compress/sqlite-jdbc） -->
+      <dependency>
+        <groupId>io.agentscope</groupId>
+        <artifactId>agentscope-harness</artifactId>
+        <version>${agentscope.version}</version>
+      </dependency>
       <!-- Token Plan(OpenAI 兼容通道)。dashscope 扩展写死原生 API 路径,与 Token Plan 端点不兼容,弃用 -->
       <dependency>
         <groupId>io.agentscope</groupId>

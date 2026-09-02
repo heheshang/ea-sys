@@ -86,8 +86,12 @@ public class AudienceService {
     }
 
     public PageResponse<AudienceResponse> list(long page, long size) {
-        IPage<AudienceRow> p = audienceMapper.selectAudiencePage(
-                new Page<>(page, size), TenantContext.require());
+        return list(TenantContext.require(), page, size);
+    }
+
+    /** 显式租户版本：对话式创建工作流（框架工具线程无 TenantContext）用。 */
+    public PageResponse<AudienceResponse> list(Long tenantId, long page, long size) {
+        IPage<AudienceRow> p = audienceMapper.selectAudiencePage(new Page<>(page, size), tenantId);
         List<AudienceResponse> records = p.getRecords().stream().map(AudienceService::toResponse).toList();
         return PageResponse.of(records, p.getTotal(), page, size);
     }

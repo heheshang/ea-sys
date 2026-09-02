@@ -244,7 +244,26 @@ public final class WorkflowPlanner implements StrategyAgent, AgentFallback {
 
     // ---- 解析助手 ----
 
-    private static List<String> channelsOf(String prompt) {
+    /**
+     * 需求画像（对话式创建策略器复用）：从需求文本抽取通道/触发/延迟/人群短语，
+     * 并给出「触发是否显式表达」判定（人群表达 = audiencePhrase 非空）。
+     */
+    public static WorkflowProfile profileOf(String prompt) {
+        TriggerSpec spec = triggerOf(prompt);
+        boolean triggerExplicit = TIME.matcher(prompt).find()
+                || WEEKDAY.matcher(prompt).find()
+                || EVERY_DAYS.matcher(prompt).find()
+                || MONTHLY.matcher(prompt).find();
+        return new WorkflowProfile(
+                channelsOf(prompt),
+                spec.cron(),
+                spec.label(),
+                delayMinutesOf(prompt),
+                audiencePhraseOf(prompt),
+                triggerExplicit);
+    }
+
+    public static List<String> channelsOf(String prompt) {
         List<int[]> hits = new ArrayList<>(); // {index, channelIdx}
         String lower = prompt.toLowerCase(Locale.ROOT);
         for (int i = 0; i < CHANNELS.size(); i++) {
@@ -264,7 +283,7 @@ public final class WorkflowPlanner implements StrategyAgent, AgentFallback {
         return new ArrayList<>(out);
     }
 
-    private static TriggerSpec triggerOf(String prompt) {
+    static TriggerSpec triggerOf(String prompt) {
         int hour = 9;
         int minute = 0;
         Matcher t = TIME.matcher(prompt);
@@ -297,7 +316,7 @@ public final class WorkflowPlanner implements StrategyAgent, AgentFallback {
         return new TriggerSpec(String.format("0 %d %d * * ?", minute, hour), label);
     }
 
-    private static long delayMinutesOf(String prompt) {
+    static long delayMinutesOf(String prompt) {
         Matcher d = DAYS_DELAY.matcher(prompt);
         if (d.find()) {
             int n = d.group(1) != null ? Integer.parseInt(d.group(1))
@@ -313,7 +332,7 @@ public final class WorkflowPlanner implements StrategyAgent, AgentFallback {
     }
 
     /** 中文二元词集合（模板/人群/需求文本共现匹配）。 */
-    private static Set<String> cjkBigrams(String s) {
+    static Set<String> cjkBigrams(String s) {
         Set<String> out = new LinkedHashSet<>();
         for (int i = 0; i + 1 < s.length(); i++) {
             char a = s.charAt(i);
@@ -329,7 +348,7 @@ public final class WorkflowPlanner implements StrategyAgent, AgentFallback {
         return Character.UnicodeScript.of(c) == Character.UnicodeScript.HAN;
     }
 
-    private static long bestTemplate(List<JsonNode> templates, String channel, Set<String> promptBi, String promptLower) {
+    static long bestTemplate(List<JsonNode> templates, String channel, Set<String> promptBi, String promptLower) {
         long bestId = 0;
         int bestScore = 0;
         for (JsonNode t : templates) {
@@ -349,7 +368,7 @@ public final class WorkflowPlanner implements StrategyAgent, AgentFallback {
         return bestId;
     }
 
-    private static long bestAudience(List<JsonNode> audiences, Set<String> promptBi, String promptLower) {
+    static long bestAudience(List<JsonNode> audiences, Set<String> promptBi, String promptLower) {
         long bestId = 0;
         int bestScore = 0;
         for (JsonNode a : audiences) {
@@ -380,7 +399,7 @@ public final class WorkflowPlanner implements StrategyAgent, AgentFallback {
         return n;
     }
 
-    private static String audiencePhraseOf(String prompt) {
+    static String audiencePhraseOf(String prompt) {
         Matcher m = AUDIENCE_PHRASE.matcher(prompt);
         if (m.find()) {
             return m.group(1);
@@ -388,7 +407,7 @@ public final class WorkflowPlanner implements StrategyAgent, AgentFallback {
         return null;
     }
 
-    private static String templateName(List<JsonNode> templates, long id) {
+    static String templateName(List<JsonNode> templates, long id) {
         for (JsonNode t : templates) {
             if (t.path("id").asLong() == id) {
                 return t.path("name").asText("");
@@ -397,7 +416,7 @@ public final class WorkflowPlanner implements StrategyAgent, AgentFallback {
         return null;
     }
 
-    private static String audienceName(List<JsonNode> audiences, long id) {
+    static String audienceName(List<JsonNode> audiences, long id) {
         for (JsonNode a : audiences) {
             if (a.path("id").asLong() == id) {
                 return a.path("name").asText("");
@@ -451,6 +470,11 @@ public final class WorkflowPlanner implements StrategyAgent, AgentFallback {
     private record TemplateHit(String channel, long templateId, String templateName) {
     }
 
-    private record TriggerSpec(String cron, String label) {
+    record TriggerSpec(String cron, String label) {
+    }
+
+    /** 需求画像（对话式创建）：触发显式表达与否用于「缺项追问」判定。 */
+    public record WorkflowProfile(List<String> channels, String triggerCron, String triggerLabel,
+                                  long delayMinutes, String audiencePhrase, boolean triggerExplicit) {
     }
 }

@@ -78,6 +78,11 @@
       <artifactId>jjwt-jackson</artifactId>
       <scope>runtime</scope>
     </dependency>
+    <!-- 对话式创建工作流 + HITL：HarnessAgent（带传递 core），ReAct 工具循环 / SSE 事件流 -->
+    <dependency>
+      <groupId>io.agentscope</groupId>
+      <artifactId>agentscope-harness</artifactId>
+    </dependency>
     <dependency>
       <groupId>org.quartz-scheduler</groupId>
       <artifactId>quartz</artifactId>

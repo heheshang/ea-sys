@@ -7,7 +7,6 @@ import com.easysys.agent.WorkflowPlanner;
 import com.easysys.api.dto.audience.AudienceResponse;
 import com.easysys.api.dto.channel.ChannelConfigView;
 import com.easysys.api.dto.template.TemplateView;
-import com.easysys.api.dto.workflow.AiGenerateRequest;
 import com.easysys.api.dto.workflow.AiGenerateResponse;
 import com.easysys.api.dto.workflow.AiToolCallView;
 import com.easysys.api.dto.workflow.SaveWorkflowRequest;
@@ -15,7 +14,6 @@ import com.easysys.api.dto.workflow.WorkflowEdgeSpec;
 import com.easysys.api.dto.workflow.WorkflowNodeSpec;
 import com.easysys.api.entity.AgentAudit;
 import com.easysys.api.mapper.AgentAuditMapper;
-import com.easysys.common.tenant.TenantContext;
 import com.easysys.common.web.BizException;
 import com.easysys.common.web.ErrorCode;
 import com.easysys.engine.dag.DagValidator;
@@ -70,22 +68,25 @@ public class AiWorkflowService {
         this.json = json;
     }
 
-    /** AI 生成工作流草稿（不落库）。 */
+    /**
+     * AI 生成工作流草稿（不落库）。租户/操作人显式传入：
+     * 对话式创建（HarnessAgent 工具线程无 TenantContext）与旧接口共用。
+     */
     @Transactional
-    public AiGenerateResponse generate(AiGenerateRequest req, String operator) {
-        String prompt = req.prompt().trim();
+    public AiGenerateResponse generateForTenant(Long tenantId, String prompt, String operator) {
+        String prompt0 = prompt.trim();
         List<AiToolCallView> toolCalls = new ArrayList<>();
 
         // 工具 1：list_channels —— 当前租户通道可用性（脱敏）
-        listChannels(toolCalls);
+        listChannels(tenantId, toolCalls);
         // 工具 2：search_templates —— 启用模板全集（AI 内部按通道/语义匹配）
         List<TemplateView> templates = searchTemplates(toolCalls);
         // 工具 3：search_audiences —— 现有人群（不自动创建，未命中仅提示）
-        List<AudienceResponse> audiences = searchAudiences(toolCalls);
+        List<AudienceResponse> audiences = searchAudiences(tenantId, toolCalls);
 
         // 规划器输入：自带租户上下文快照（仅关键字段，量受控）
         ObjectNode input = json.createObjectNode();
-        input.put("prompt", prompt);
+        input.put("prompt", prompt0);
         ArrayNode ts = input.putArray("templates");
         for (TemplateView t : templates) {
             ObjectNode o = ts.addObject();
@@ -119,7 +120,7 @@ public class AiWorkflowService {
         validateDag(toolCalls, nodes, edges);
 
         // 审计落库（生成动作，草稿未落库，仅审计 AI 产出）
-        persistAudit(TenantContext.require(), outcome, operator);
+        persistAudit(tenantId, outcome, operator);
 
         SaveWorkflowRequest draft = new SaveWorkflowRequest(
                 out.path("name").asText(""),
@@ -132,10 +133,26 @@ public class AiWorkflowService {
 
     // ---- 工具执行 ----
 
-    private List<ChannelConfigView> listChannels(List<AiToolCallView> calls) {
+    /**
+     * 公开查询方法（对话式创建框架工具复用；返回全量行，不写时间线审计）。
+     * 注意：模板为全租户共享语义，与 listChannels/listAudiences 不同。
+     */
+    public List<ChannelConfigView> listChannelsFor(Long tenantId) {
+        return listChannels(tenantId, new ArrayList<>());
+    }
+
+    public List<TemplateView> searchTemplatesFor() {
+        return searchTemplates(new ArrayList<>());
+    }
+
+    public List<AudienceResponse> searchAudiencesFor(Long tenantId) {
+        return searchAudiences(tenantId, new ArrayList<>());
+    }
+
+    private List<ChannelConfigView> listChannels(Long tenantId, List<AiToolCallView> calls) {
         long start = System.currentTimeMillis();
         try {
-            List<ChannelConfigView> rows = channelConfigService.list(TenantContext.require(), null);
+            List<ChannelConfigView> rows = channelConfigService.list(tenantId, null);
             ArrayNode summary = json.createArrayNode();
             for (ChannelConfigView v : rows) {
                 ObjectNode o = summary.addObject();
@@ -171,13 +188,13 @@ public class AiWorkflowService {
         }
     }
 
-    private List<AudienceResponse> searchAudiences(List<AiToolCallView> calls) {
+    private List<AudienceResponse> searchAudiences(Long tenantId, List<AiToolCallView> calls) {
         long start = System.currentTimeMillis();
         ObjectNode args = json.createObjectNode();
         args.put("page", 1);
         args.put("size", 100);
         try {
-            List<AudienceResponse> rows = audienceService.list(1, 100).records();
+            List<AudienceResponse> rows = audienceService.list(tenantId, 1, 100).records();
             ArrayNode summary = json.createArrayNode();
             for (AudienceResponse a : rows) {
                 ObjectNode o = summary.addObject();

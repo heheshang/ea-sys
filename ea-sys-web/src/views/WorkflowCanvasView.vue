@@ -6,7 +6,7 @@
  *  - VueFlow Edge.id = `${source}->${target}`；data.condition = 边条件 DSL（null = else 兜底）
  * 操作流：拖放/点选节点 → 连线 → 配置 → 保存 → 校验 → 发布 → 干跑（选 ready 快照）→ 报告。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { VueFlow, MarkerType, useVueFlow } from '@vue-flow/core'
@@ -17,7 +17,7 @@ import dagre from '@dagrejs/dagre'
 import CanvasNode from '../components/canvas/CanvasNode.vue'
 import EdgeConditionEditor from '../components/canvas/EdgeConditionEditor.vue'
 import {
-  aiGenerate,
+  aiChat,
   createWorkflow,
   downloadPlanValidationTemplate,
   dryRunWorkflow,
@@ -599,39 +599,170 @@ async function openPlanReport() {
   }
 }
 
-/* ---------- AI 创建 ---------- */
+/* ---------- AI 创建（流式对话 + HITL 确认） ---------- */
 
-const aiDialog = ref(false)
-const aiPrompt = ref('')
-const aiGenerating = ref(false)
-const aiResult = ref<AiGenerateResponse | null>(null)
-
-function openAiDialog() {
-  aiPrompt.value = ''
-  aiResult.value = null
-  aiDialog.value = true
+interface AiToolLine {
+  name: string
+  status: string
+  delta: string
+}
+interface AiChatMsg {
+  id: number
+  role: 'user' | 'assistant'
+  text: string
+  streaming: boolean
+  tools: AiToolLine[]
 }
 
-async function runAiGenerate() {
-  if (!aiPrompt.value.trim()) {
-    ElMessage.warning('请描述期望的工作流，如「每天上午9点向近30天未购买会员发送短信」')
-    return
+const aiDialog = ref(false)
+const chatSessionId = ref('')
+const chatMsgs = ref<AiChatMsg[]>([])
+const chatInput = ref('')
+const chatSending = ref(false)
+/** 挂起中的 HITL 确认（卡片出现时输入框禁用，只能确认/取消）。 */
+const pendingConfirm = ref<{
+  replyId: string
+  calls: { id: string; name: string; input: Record<string, unknown> | null }[]
+} | null>(null)
+const latestDraft = ref<AiGenerateResponse | null>(null)
+/** 草稿卡挂在哪条助手消息下（draft_ready 到达时是当前流消息）。 */
+const latestDraftMsgId = ref<number | null>(null)
+const chatBodyRef = ref<HTMLElement | null>(null)
+let msgSeq = 0
+
+function pushMsg(role: 'user' | 'assistant', text: string): AiChatMsg {
+  const m: AiChatMsg = { id: ++msgSeq, role, text, streaming: false, tools: [] }
+  chatMsgs.value.push(m)
+  return m
+}
+
+function openAiDialog() {
+  chatSessionId.value = crypto.randomUUID()
+  chatMsgs.value = []
+  chatInput.value = ''
+  pendingConfirm.value = null
+  latestDraft.value = null
+  latestDraftMsgId.value = null
+  msgSeq = 0
+  aiDialog.value = true
+  pushMsg(
+    'assistant',
+    '描述你想创建的工作流，例如「每天上午9点向近30天未购买会员发送短信」。我会逐项查询通道、模板与人群，和你确认后再生成草稿。',
+  )
+}
+
+async function sendChat() {
+  const text = chatInput.value.trim()
+  if (!text || chatSending.value) return
+  await stream(text, undefined)
+}
+
+async function sendConfirm(confirmed: boolean) {
+  if (chatSending.value) return
+  await stream(confirmed ? '确认生成' : '取消', { confirmed })
+}
+
+/**
+ * 定位工具行：按时间倒序找最新同名行——正常轮命中当前消息；
+ * 确认轮恢复执行时结果事件不带 TOOL_CALL_START，会命中上一轮挂起的行。
+ */
+function findToolLine(name: string): AiToolLine | null {
+  for (let i = chatMsgs.value.length - 1; i >= 0; i--) {
+    const m = chatMsgs.value[i]
+    if (m.role !== 'assistant') continue
+    const hit = [...m.tools].reverse().find((t) => t.name === name)
+    if (hit) return hit
   }
-  aiGenerating.value = true
+  return null
+}
+
+/** 从 SSE 帧还原确认卡片里的工具调用（外部 JSON，逐字段校验）。 */
+function confirmCalls(v: unknown): { id: string; name: string; input: Record<string, unknown> | null }[] {
+  if (!Array.isArray(v)) return []
+  return v.flatMap((c) => {
+    if (c == null || typeof c !== 'object' || !('id' in c) || !('name' in c)) return []
+    if (typeof c.id !== 'string' || typeof c.name !== 'string') return []
+    const input = 'input' in c && c.input != null && typeof c.input === 'object' ? c.input : null
+    return [{ id: c.id, name: c.name, input: input as Record<string, unknown> | null }]
+  })
+}
+
+async function stream(message: string, confirm: { confirmed: boolean } | undefined) {
+  pushMsg('user', message)
+  const assistant = pushMsg('assistant', '')
+  assistant.streaming = true
+  chatSending.value = true
+  chatInput.value = ''
   try {
-    aiResult.value = await aiGenerate(aiPrompt.value.trim())
-    ElMessage.success('草稿已生成，请核对工具调用与计划摘要后载入画布')
+    await aiChat({ message, sessionId: chatSessionId.value, confirm }, (ev) => {
+      switch (ev.type) {
+        case 'TEXT_BLOCK_DELTA':
+          assistant.text += String(ev.delta ?? '')
+          break
+        case 'TEXT_BLOCK_END':
+          assistant.streaming = false
+          break
+        case 'TOOL_CALL_START':
+          assistant.tools.push({ name: String(ev.toolCallName ?? ''), status: '执行中', delta: '' })
+          break
+        case 'TOOL_RESULT_TEXT_DELTA': {
+          // 确认轮恢复执行时结果属于上一轮挂起的工具行（本消息无 TOOL_CALL_START）
+          const line = findToolLine(String(ev.toolCallName ?? ''))
+          if (line) line.delta += String(ev.delta ?? '')
+          break
+        }
+        case 'TOOL_RESULT_END': {
+          const line = findToolLine(String(ev.toolCallName ?? ''))
+          if (line) line.status = String(ev.state ?? '')
+          break
+        }
+        case 'REQUIRE_USER_CONFIRM': {
+          pendingConfirm.value = { replyId: String(ev.replyId ?? ''), calls: confirmCalls(ev.toolCalls) }
+          break
+        }
+        case 'USER_CONFIRM_RESULT': {
+          // 拒绝确认：挂起的工具行不再执行，标记为已取消
+          const results = Array.isArray(ev.confirmResults) ? ev.confirmResults : []
+          const declined = results.some((r) => r != null && typeof r === 'object' && 'confirmed' in r && r.confirmed === false)
+          if (declined) {
+            for (const c of pendingConfirm.value?.calls ?? []) {
+              const line = findToolLine(c.name)
+              if (line && line.status === '执行中') line.status = '已取消'
+            }
+          }
+          pendingConfirm.value = null
+          break
+        }
+        case 'AGENT_RESULT': {
+          if (!assistant.text && ev.summary) assistant.text = String(ev.summary)
+          assistant.streaming = false
+          break
+        }
+        case 'draft_ready':
+          if (ev.draft) {
+            latestDraft.value = ev.draft as unknown as AiGenerateResponse
+            latestDraftMsgId.value = assistant.id
+          }
+          break
+      }
+    })
   } catch (e) {
-    ElMessage.error((e as Error).message || 'AI 生成失败')
+    assistant.streaming = false
+    if (!assistant.text) assistant.text = (e as Error).message || '对话失败'
+    ElMessage.error((e as Error).message || '对话失败')
   } finally {
-    aiGenerating.value = false
+    assistant.streaming = false
+    chatSending.value = false
   }
 }
 
 /** 应用 AI 草稿到画布（仍为未保存状态，走人工校对 → 保存/校验/发布）。 */
 function applyAiDraft() {
-  const draft = aiResult.value?.workflowDraft
-  if (!draft) return
+  const draft = latestDraft.value?.workflowDraft
+  if (!draft) {
+    ElMessage.warning('尚无可用草稿，请先在对话中完成生成')
+    return
+  }
   name.value = draft.name ?? ''
   description.value = draft.description ?? ''
   status.value = ''
@@ -680,18 +811,19 @@ function toolLabel(name: string): string {
     search_audiences: '检索人群',
     build_dag: '编排 DAG',
     validate_dag: '校验 DAG',
+    plan_workflow: '生成工作流草稿',
   }
   return M[name] ?? name
 }
 
-function toolArgsText(args: Record<string, unknown> | null): string {
-  if (!args) return '{}'
-  try {
-    return JSON.stringify(args, null, 1)
-  } catch {
-    return String(args)
-  }
-}
+/* ---------- AI 对话自动滚动 ---------- */
+watch(
+  () => [chatMsgs.value.length, chatMsgs.value.map((m) => m.text).join(''), pendingConfirm.value],
+  async () => {
+    await nextTick()
+    if (chatBodyRef.value) chatBodyRef.value.scrollTop = chatBodyRef.value.scrollHeight
+  },
+)
 
 /* ---------- 自动布局 ---------- */
 
@@ -973,54 +1105,82 @@ onMounted(load)
       </div>
     </div>
 
-    <!-- AI 创建 -->
-    <el-dialog v-model="aiDialog" title="AI 创建（自然语言 → DAG 草稿）" width="640px">
-      <el-form label-width="0">
-        <el-input
-          v-model="aiPrompt"
-          type="textarea"
-          :rows="3"
-          placeholder="描述期望的工作流，例如：每天上午9点向近30天未购买会员发送短信，使用 618大促通知 模板，延迟2天后再次提醒"
-        />
-      </el-form>
-      <div v-if="aiResult" class="ai-result">
-        <div class="ai-plan-summary">{{ aiResult.planSummary }}</div>
-
-        <el-alert
-          v-if="aiResult.audienceHint && !aiResult.audienceHint.matched"
-          type="warning"
-          :closable="false"
-          class="ai-audience-alert"
-        >
-          <template #default>
-            <div>未匹配到现有人群（建议名：{{ aiResult.audienceHint.suggestedName ?? '-' }}）</div>
-            <div class="ai-alert-note">{{ aiResult.audienceHint.note ?? 'AI 不自动创建人群，请先人工圈选后再保存。' }}</div>
-            <div class="ai-alert-actions">
-              <el-button size="small" type="warning" plain @click="router.push('/audiences')">去人群管理圈选</el-button>
+    <!-- AI 创建（流式对话 + HITL 确认） -->
+    <el-dialog v-model="aiDialog" title="AI 创建（对话式，生成前人工确认）" width="720px" class="ai-chat-dialog">
+      <div class="ai-chat-body" ref="chatBodyRef">
+        <div v-for="m in chatMsgs" :key="m.id" class="ai-msg" :class="m.role">
+          <div class="ai-bubble">
+            <!-- 工具调用行（实时流转步骤） -->
+            <div v-if="m.tools.length" class="ai-tool-list">
+              <div v-for="(t, idx) in m.tools" :key="idx" class="ai-tool-card">
+                <div class="ai-tool-head">
+                  <span class="ai-tool-name">{{ toolLabel(t.name) }}</span>
+                  <el-tag
+                    :type="t.status === 'SUCCESS' ? 'success' : t.status === 'FAILED' ? 'danger' : 'info'"
+                    size="small"
+                  >
+                    {{ t.status }}
+                  </el-tag>
+                </div>
+                <pre v-if="t.delta" class="ai-tool-result">{{ t.delta }}</pre>
+              </div>
             </div>
-          </template>
-        </el-alert>
-
-        <div class="ai-tools-title">AI 调用记录（{{ aiResult.toolCalls.length }}）</div>
-        <div class="ai-tool-list">
-          <div v-for="(t, idx) in aiResult.toolCalls" :key="idx" class="ai-tool-card">
-            <div class="ai-tool-head">
-              <span class="ai-tool-name">{{ toolLabel(t.name) }}</span>
-              <el-tag :type="t.status === 'SUCCESS' ? 'success' : 'danger'" size="small">{{ t.status }}</el-tag>
-              <span class="ai-tool-duration">{{ t.durationMs }} ms</span>
+            <!-- 文本（打字机增量） -->
+            <template v-if="m.text || m.streaming">
+              <span class="ai-text">{{ m.text }}</span><span v-if="m.streaming" class="ai-caret">▌</span>
+            </template>
+            <!-- 草稿卡 -->
+            <div v-if="m.id === latestDraftMsgId" class="ai-draft-card">
+              <div class="ai-draft-title">
+                草稿已生成：{{ latestDraft?.workflowDraft.name || '未命名工作流' }}（{{
+                  latestDraft?.workflowDraft.nodes.length ?? 0
+                }} 节点）
+              </div>
+              <div class="ai-draft-summary">{{ latestDraft?.planSummary }}</div>
+              <el-alert
+                v-if="latestDraft?.audienceHint && !latestDraft.audienceHint.matched"
+                type="warning"
+                :closable="false"
+                class="ai-audience-alert"
+              >
+                <template #default>
+                  <div>
+                    未匹配到现有人群（建议名：{{ latestDraft.audienceHint.suggestedName ?? '-' }}），AI 不自动创建人群，请先在人群管理圈选。
+                  </div>
+                  <div class="ai-alert-actions">
+                    <el-button size="small" type="warning" plain @click="router.push('/audiences')">去人群管理圈选</el-button>
+                  </div>
+                </template>
+              </el-alert>
+              <el-button size="small" type="primary" @click="applyAiDraft">载入画布（人工校对）</el-button>
             </div>
-            <div class="ai-tool-args">{{ toolArgsText(t.arguments) }}</div>
-            <pre class="ai-tool-result">{{ JSON.stringify(t.result, null, 1) }}</pre>
+          </div>
+        </div>
+        <!-- HITL 确认卡片：出现时输入框禁用，只能确认/取消 -->
+        <div v-if="pendingConfirm" class="ai-confirm-card">
+          <div class="ai-confirm-text">AI 已将你的描述整理为工作流草稿，确认后生成？</div>
+          <div class="ai-confirm-actions">
+            <el-button size="small" type="primary" :disabled="chatSending" @click="sendConfirm(true)">确认生成</el-button>
+            <el-button size="small" :disabled="chatSending" @click="sendConfirm(false)">取消</el-button>
           </div>
         </div>
       </div>
-      <template #footer>
-        <el-button @click="aiDialog = false">取消</el-button>
-        <el-button v-if="aiResult" type="primary" @click="applyAiDraft">载入画布（人工校对）</el-button>
-        <el-button type="primary" :loading="aiGenerating" @click="runAiGenerate">
-          {{ aiResult ? '重新生成' : '生成草稿' }}
+      <div class="ai-chat-input">
+        <el-input
+          v-model="chatInput"
+          :disabled="!!pendingConfirm || chatSending"
+          placeholder="补充需求 / 调整触发时间与人群（回车发送）"
+          @keyup.enter="sendChat()"
+        />
+        <el-button
+          type="primary"
+          :disabled="!!pendingConfirm || chatSending || !chatInput.trim()"
+          :loading="chatSending"
+          @click="sendChat"
+        >
+          发送
         </el-button>
-      </template>
+      </div>
     </el-dialog>
 
     <!-- 干跑快照选择 -->
@@ -1306,19 +1466,6 @@ onMounted(load)
   font-weight: 500;
   word-break: break-all;
 }
-.ai-result {
-  margin-top: 12px;
-}
-.ai-plan-summary {
-  font-size: 13px;
-  color: #303133;
-  background: #f4f4f5;
-  border-radius: 6px;
-  padding: 10px 12px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
 .ai-audience-alert {
   margin-top: 10px;
 }
@@ -1330,51 +1477,77 @@ onMounted(load)
 .ai-alert-actions {
   margin-top: 6px;
 }
-.ai-tools-title {
-  font-weight: 600;
+.ai-chat-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 440px;
+  overflow-y: auto;
+  padding: 2px;
+}
+.ai-msg {
+  display: flex;
+}
+.ai-msg.user {
+  justify-content: flex-end;
+}
+.ai-msg.assistant {
+  justify-content: flex-start;
+}
+.ai-bubble {
+  max-width: 86%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  line-height: 1.7;
   font-size: 13px;
-  margin: 12px 0 8px;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.ai-msg.user .ai-bubble {
+  background: #ecf5ff;
+  color: #303133;
+}
+.ai-msg.assistant .ai-bubble {
+  background: #f4f4f5;
+  color: #303133;
+}
+.ai-text {
+  white-space: pre-wrap;
+}
+.ai-caret {
+  color: #409eff;
+  animation: ai-caret-blink 1s steps(1) infinite;
+}
+@keyframes ai-caret-blink {
+  50% {
+    opacity: 0;
+  }
 }
 .ai-tool-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 320px;
-  overflow-y: auto;
 }
 .ai-tool-card {
   border: 1px solid #ebeef5;
+  background: #fff;
   border-radius: 6px;
-  padding: 8px 10px;
+  padding: 6px 10px;
 }
 .ai-tool-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 6px;
 }
 .ai-tool-name {
   font-weight: 600;
-  font-size: 13px;
-}
-.ai-tool-duration {
   font-size: 12px;
-  color: #909399;
-  margin-left: auto;
-}
-.ai-tool-args {
-  font-size: 12px;
-  color: #606266;
-  background: #fafafa;
-  border-radius: 4px;
-  padding: 4px 8px;
-  white-space: pre-wrap;
-  word-break: break-all;
-  margin-bottom: 4px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .ai-tool-result {
-  margin: 0;
+  margin: 6px 0 0;
   font-size: 11px;
   line-height: 1.5;
   white-space: pre-wrap;
@@ -1385,6 +1558,57 @@ onMounted(load)
   padding: 4px 8px;
   max-height: 140px;
   overflow-y: auto;
+}
+.ai-draft-card {
+  border: 1px solid #67c23a;
+  background: #fff;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+.ai-draft-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: #303133;
+}
+.ai-draft-summary {
+  font-size: 12px;
+  color: #606266;
+  background: #fafafa;
+  border-radius: 4px;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.ai-confirm-card {
+  align-self: stretch;
+  border: 1px dashed #409eff;
+  background: #f0f7ff;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+.ai-confirm-text {
+  font-size: 13px;
+  color: #303133;
+}
+.ai-confirm-actions {
+  display: flex;
+  gap: 8px;
+}
+.ai-chat-input {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.ai-chat-input .el-input {
+  flex: 1;
 }
 .report-summary {
   margin-bottom: 14px;

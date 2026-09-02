@@ -6,6 +6,7 @@ import com.easysys.agent.DeterministicLayerPlanner;
 import com.easysys.agent.AgentExecutor;
 import com.easysys.agent.AgentRunConfig;
 import com.easysys.api.dto.agent.StrategyRequest;
+import com.easysys.api.dto.agent.StrategyUpdateRequest;
 import com.easysys.api.dto.agent.StrategyView;
 import com.easysys.api.entity.AgentAudit;
 import com.easysys.api.entity.LayerStrategy;
@@ -105,6 +106,92 @@ public class StrategyService {
 
     public StrategyView get(Long id) {
         return toView(require(id));
+    }
+
+    /**
+     * 编辑 draft 策略：重编 layers 规则（通道可用性恰等匹配 + 路由顺序 + 优先级），
+     * 重建策略文档，沿用原 strategy_version / source / fallback_rule。发布后不可编辑（改 = 生成新版本）。
+     */
+    @Transactional
+    public StrategyView update(Long id, StrategyUpdateRequest req, String operator) {
+        LayerStrategy s = require(id);
+        if (!"draft".equals(s.getStatus())) {
+            throw new BizException(ErrorCode.BAD_REQUEST,
+                    "仅草稿策略可编辑（当前 " + s.getStatus() + "），已发布策略请生成新版本");
+        }
+        if (req.name().isBlank()) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "策略名称不能为空");
+        }
+
+        ObjectNode doc = json.createObjectNode();
+        String version = s.getStrategyVersion();
+        doc.put("strategy_version", version);
+        ArrayNode dims = doc.putArray("dimensions");
+        dims.add("channel_availability");
+        ArrayNode layers = doc.putArray("layers");
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (StrategyUpdateRequest.LayerEdit l : req.layers()) {
+            if (!seen.add(l.id())) {
+                throw new BizException(ErrorCode.BAD_REQUEST, "分层 id 重复: " + l.id());
+            }
+            String availability = normalizeAvailability(l.channelAvailability());
+            if (availability == null) {
+                throw new BizException(ErrorCode.BAD_REQUEST,
+                        "非法 channel_availability: " + l.channelAvailability());
+            }
+            ObjectNode layer = layers.addObject();
+            layer.put("id", l.id());
+            layer.put("name", l.name());
+            ObjectNode rule = layer.putObject("rule");
+            rule.put("channel_availability", availability);
+            ArrayNode order = layer.putArray("route_order");
+            if (l.routeOrder() != null) {
+                for (String c : l.routeOrder()) {
+                    if (c.equals("sms") || c.equals("email")) {
+                        order.add(c);
+                    }
+                }
+            }
+            layer.put("priority", l.priority());
+            layer.put("confidence", 1.0);
+        }
+        // fallback_rule：沿用原策略；无原文档时给确定性兜底
+        JsonNode orig = parse(s.getStrategy());
+        JsonNode fb = orig == null ? null : orig.path("fallback_rule");
+        if (fb == null || !fb.isObject()) {
+            ObjectNode d = doc.putObject("fallback_rule");
+            d.put("channel_availability", "sms_only");
+            ArrayNode o = d.putArray("route_order");
+            o.add("sms");
+        } else {
+            doc.set("fallback_rule", fb);
+        }
+        doc.put("source", s.getSource() == null ? "deterministic" : s.getSource());
+        doc.put("auditable", true);
+        doc.put("confidence", 1.0);
+
+        s.setName(req.name().trim());
+        try {
+            s.setStrategy(json.writeValueAsString(doc));
+            s.setDimensions(json.writeValueAsString(doc.get("dimensions")));
+        } catch (Exception e) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "策略文档序列化失败: " + e.getMessage());
+        }
+        s.setUpdatedAt(Instant.now());
+        strategyMapper.updateById(s);
+        return toView(s);
+    }
+
+    /** 通道可用性枚举归一（容错大小写/空格）；非法 → null。 */
+    private String normalizeAvailability(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String v = raw.trim().toLowerCase();
+        return switch (v) {
+            case "sms_only", "email_only", "multi", "none" -> v;
+            default -> null;
+        };
     }
 
     /** 发布闸门：draft → published（幂等：重复发布直接返回）。 */

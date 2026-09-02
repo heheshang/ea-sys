@@ -268,6 +268,22 @@ export interface StrategyRequest {
   routeOrder?: string[]
 }
 
+/** 分层编辑项：单层规则（对齐后端 StrategyUpdateRequest.LayerEdit）。 */
+export interface StrategyLayerEdit {
+  id: string
+  name: string
+  /** sms_only | email_only | multi | none */
+  channelAvailability: string
+  routeOrder: string[]
+  priority: number
+}
+
+/** 编辑分层策略请求（PUT /api/agent/strategies/{id}，仅 draft）。 */
+export interface StrategyUpdateRequest {
+  name: string
+  layers: StrategyLayerEdit[]
+}
+
 /** 路由预览请求（POST /api/agent/route-preview）。 */
 export interface RoutePreviewRequest {
   contactId: number

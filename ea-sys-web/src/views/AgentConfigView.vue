@@ -14,8 +14,17 @@ import {
   publishStrategy,
   routePreview,
   scanChurn,
+  updateStrategy,
 } from '../api/agent'
-import type { ChurnScanRequest, ChurnScanView, RoutePreviewRequest, RoutePreviewView, StrategyView } from '../api/types'
+import type {
+  ChurnScanRequest,
+  ChurnScanView,
+  RoutePreviewRequest,
+  RoutePreviewView,
+  StrategyLayerEdit,
+  StrategyUpdateRequest,
+  StrategyView,
+} from '../api/types'
 
 const {
   data: strategies,
@@ -156,6 +165,120 @@ function showDetail(row: StrategyView) {
 }
 
 const prettyJson = (v: unknown): string => JSON.stringify(v, null, 2) ?? '-'
+
+/* ---------- 编辑分层策略（仅 draft） ---------- */
+const AVAILABILITY_OPTIONS = [
+  { value: 'sms_only', label: '仅短信' },
+  { value: 'email_only', label: '仅邮件' },
+  { value: 'multi', label: '双通道' },
+  { value: 'none', label: '无通道' },
+] as const
+
+/** 从策略文档提取可编辑层列表（策略文档 layers[] → 编辑表单）。 */
+function layersFromStrategy(strategy: unknown): StrategyLayerEdit[] {
+  const doc = strategy as { layers?: unknown[] } | null | undefined
+  const raw = doc?.layers
+  if (!Array.isArray(raw)) return []
+  return raw.map((l) => {
+    const layer = (l ?? {}) as Record<string, unknown>
+    const rule = (layer.rule ?? {}) as { channel_availability?: unknown }
+    return {
+      id: String(layer.id ?? ''),
+      name: String(layer.name ?? ''),
+      channelAvailability: String(rule.channel_availability ?? 'sms_only'),
+      routeOrder: Array.isArray(layer.route_order) ? layer.route_order.map(String) : [],
+      priority: typeof layer.priority === 'number' ? layer.priority : 1,
+    }
+  })
+}
+
+const editVisible = ref(false)
+const editLoading = ref(false)
+const editId = ref<number | null>(null)
+const editName = ref('')
+const editLayers = ref<StrategyLayerEdit[]>([])
+
+function openEdit(row: StrategyView) {
+  editId.value = row.id
+  editName.value = row.name
+  editLayers.value = layersFromStrategy(row.strategy)
+  editVisible.value = true
+}
+
+function nextLayerId(): string {
+  const used = new Set(editLayers.value.map((l) => l.id))
+  let n = editLayers.value.length + 1
+  while (used.has(`L${n}`)) n += 1
+  return `L${n}`
+}
+
+function addLayer() {
+  editLayers.value.push({
+    id: nextLayerId(),
+    name: '',
+    channelAvailability: 'sms_only',
+    routeOrder: ['sms'],
+    priority: editLayers.value.length + 1,
+  })
+}
+
+function removeLayer(i: number) {
+  editLayers.value.splice(i, 1)
+}
+
+function setLayerAvailability(i: number, v: string) {
+  editLayers.value[i].channelAvailability = v
+}
+
+function setLayerRouteOrder(i: number, v: string[]) {
+  editLayers.value[i].routeOrder = v
+}
+
+function setLayerPriority(i: number, v: number | undefined) {
+  editLayers.value[i].priority = v ?? 1
+}
+
+async function submitEdit() {
+  if (!editId.value) return
+  if (!editName.value.trim()) {
+    ElMessage.warning('请填写策略名称')
+    return
+  }
+  const ids = editLayers.value.map((l) => l.id)
+  if (new Set(ids).size !== ids.length) {
+    ElMessage.warning('层 ID 不能重复')
+    return
+  }
+  if (!editLayers.value.every((l) => AVAILABILITY_OPTIONS.some((o) => o.value === l.channelAvailability))) {
+    ElMessage.warning('存在非法的通道可用性取值')
+    return
+  }
+  if (!editLayers.value.every((l) => l.priority >= 1)) {
+    ElMessage.warning('层优先级须 ≥ 1')
+    return
+  }
+  const req: StrategyUpdateRequest = {
+    name: editName.value.trim(),
+    layers: editLayers.value.map((l) => ({
+      id: l.id,
+      name: l.name,
+      channelAvailability: l.channelAvailability,
+      routeOrder: l.routeOrder,
+      priority: l.priority,
+    })),
+  }
+  editLoading.value = true
+  try {
+    await updateStrategy(editId.value, req)
+    ElMessage.success('策略已更新（draft，需发布后生效）')
+    editVisible.value = false
+    await refetch()
+  } catch {
+    ElMessage.error('策略更新失败')
+  } finally {
+    editLoading.value = false
+  }
+}
 </script>
 
 <template>
@@ -214,10 +337,11 @@ const prettyJson = (v: unknown): string => JSON.stringify(v, null, 2) ?? '-'
           <el-table-column label="创建时间" width="132">
             <template #default="{ row }">{{ fmtTime(row.createdAt) }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="170" fixed="right">
+          <el-table-column label="操作" width="200" fixed="right">
             <template #default="{ row }">
               <el-button size="small" type="primary" link @click="showDetail(row)">详情</el-button>
-              <el-button v-if="row.status !== 'published'" size="small" type="success" link @click="publish(row)">发布</el-button>
+              <el-button v-if="row.status === 'draft'" size="small" type="warning" link @click="openEdit(row)">编辑</el-button>
+              <el-button v-if="row.status === 'draft'" size="small" type="success" link @click="publish(row)">发布</el-button>
               <el-button size="small" type="danger" link @click="remove(row)">删除</el-button>
             </template>
           </el-table-column>
@@ -318,6 +442,10 @@ const prettyJson = (v: unknown): string => JSON.stringify(v, null, 2) ?? '-'
     <!-- 策略详情 -->
     <el-drawer v-model="detailVisible" :title="`策略详情 #${detailStrategy?.id ?? ''}`" size="560px">
       <template v-if="detailStrategy">
+        <div class="detail-actions">
+          <el-tag :type="statusType(detailStrategy.status)" size="small">{{ detailStrategy.status }}</el-tag>
+          <el-button v-if="detailStrategy.status === 'draft'" size="small" type="warning" plain @click="openEdit(detailStrategy)">编辑分层</el-button>
+        </div>
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="名称">{{ detailStrategy.name }}</el-descriptions-item>
           <el-descriptions-item label="状态">
@@ -338,6 +466,47 @@ const prettyJson = (v: unknown): string => JSON.stringify(v, null, 2) ?? '-'
         <pre class="json-block">{{ prettyJson(detailStrategy.strategy) }}</pre>
       </template>
     </el-drawer>
+
+    <!-- 编辑分层策略（仅 draft） -->
+    <el-dialog v-model="editVisible" title="编辑分层策略" width="680px">
+      <el-form label-width="90px">
+        <el-form-item label="策略名称">
+          <el-input v-model="editName" placeholder="如：通道优先分层" maxlength="128" />
+        </el-form-item>
+        <el-form-item label="层规则">
+          <div class="layer-editor">
+            <div v-for="(layer, i) in editLayers" :key="layer.id" class="layer-row">
+              <div class="layer-row-head">
+                <span class="layer-id">{{ layer.id }}</span>
+                <el-input v-model="layer.name" placeholder="层名称（如：仅短信）" size="small" style="flex: 1" />
+                <el-button link type="danger" size="small" @click="removeLayer(i)">删除该层</el-button>
+              </div>
+              <div class="layer-row-body">
+                <el-form-item label="通道可用性" label-width="88px" class="layer-field">
+                  <el-select :model-value="layer.channelAvailability" size="small" style="width: 100%" @update:model-value="(v: string) => setLayerAvailability(i, v)">
+                    <el-option v-for="o in AVAILABILITY_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="路由顺序" label-width="88px" class="layer-field">
+                  <el-checkbox-group :model-value="layer.routeOrder" size="small" @update:model-value="(v: Array<string | number | boolean>) => setLayerRouteOrder(i, v.map(String))">
+                    <el-checkbox v-for="c in routeChoices" :key="c" :value="c">{{ c }}</el-checkbox>
+                  </el-checkbox-group>
+                </el-form-item>
+                <el-form-item label="优先级" label-width="88px" class="layer-field">
+                  <el-input-number :model-value="layer.priority" :min="1" size="small" controls-position="right" style="width: 110px" @update:model-value="(v: number | undefined) => setLayerPriority(i, v)" />
+                </el-form-item>
+              </div>
+            </div>
+            <el-button link type="primary" size="small" @click="addLayer">+ 添加层</el-button>
+            <div class="form-tip">分层匹配：成员按通道可用性从上到下命中首个可用层；未命中或画布未配置该层时落入兜底出边。</div>
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editVisible = false">取消</el-button>
+        <el-button type="primary" :loading="editLoading" @click="submitEdit">保存草稿</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -438,8 +607,47 @@ const prettyJson = (v: unknown): string => JSON.stringify(v, null, 2) ?? '-'
   font-size: 12px;
   color: #909399;
 }
+.detail-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
 .detail-head {
   margin: 14px 0 6px;
+}
+.layer-editor {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.layer-row {
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.layer-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.layer-id {
+  font-weight: 600;
+  color: #409eff;
+  background: #ecf5ff;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+}
+.layer-row-body {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.layer-field {
+  margin-bottom: 0;
 }
 .json-block {
   margin: 0;

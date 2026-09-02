@@ -1,5 +1,6 @@
 package com.easysys.api;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -27,6 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -295,6 +297,133 @@ class M4AgentTests {
                 .andExpect(jsonPath("$.data.reordered[0]").value("sms"))
                 .andExpect(jsonPath("$.data.reordered[1]").value("email"))
                 .andExpect(jsonPath("$.data.unchanged").value(true));
+    }
+
+    // ---------- 7. 草稿策略分层编辑（PUT strategies/{id}） ----------
+
+    @Test
+    void editDraftStrategyRebuildsLayersPreservingVersionAndRejectsPublishedEdit() throws Exception {
+        // 生成草稿（固定版本便于断言沿用）
+        String gen = mvc.perform(post("/api/agent/strategies").header(AUTH, bearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"原始分层\",\"strategyVersion\":\"v-edit\",\"routeOrder\":[\"sms\",\"email\"]}"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        long id = Long.parseLong(JsonPath.read(gen, "$.data.id").toString());
+
+        // PUT 重编层规则：仅短信(L1)/仅邮件(L2)，沿用原策略版本
+        String editBody = asJson(Map.of(
+                "name", "编辑后分层",
+                "layers", List.of(
+                        editLayer("L1", "仅短信", "sms_only", List.of("sms"), 1),
+                        editLayer("L2", "仅邮件", "email_only", List.of("email"), 2))));
+        mvc.perform(put("/api/agent/strategies/{id}", id).header(AUTH, bearer())
+                        .contentType(MediaType.APPLICATION_JSON).content(editBody))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("draft"))
+                .andExpect(jsonPath("$.data.strategyVersion").value("v-edit"))
+                .andExpect(jsonPath("$.data.source").value("deterministic"))
+                .andExpect(jsonPath("$.data.strategy.layers.length()").value(2))
+                .andExpect(jsonPath("$.data.strategy.layers[0].id").value("L1"))
+                .andExpect(jsonPath("$.data.strategy.layers[0].rule.channel_availability").value("sms_only"))
+                .andExpect(jsonPath("$.data.strategy.layers[0].priority").value(1))
+                .andExpect(jsonPath("$.data.strategy.layers[0].route_order[0]").value("sms"))
+                .andExpect(jsonPath("$.data.strategy.layers[1].id").value("L2"))
+                .andExpect(jsonPath("$.data.strategy.strategy_version").value("v-edit"))
+                .andExpect(jsonPath("$.data.strategy.dimensions[0]").value("channel_availability"));
+
+        // 深层数据已落到层原文档上的 rule 字段
+        String doc = jdbc.queryForObject(
+                "SELECT strategy FROM layer_strategy WHERE id = ?", String.class, id);
+        JsonNode saved = new com.fasterxml.jackson.databind.ObjectMapper().readTree(doc);
+        assertThat(saved.path("strategy_version").asText()).isEqualTo("v-edit");
+        assertThat(saved.path("layers").path(0).path("rule").path("channel_availability").asText())
+                .isEqualTo("sms_only");
+
+        // 发布后只读：再 PUT → 400
+        mvc.perform(post("/api/agent/strategies/{id}/publish", id).header(AUTH, bearer()))
+                .andExpect(status().isOk());
+        mvc.perform(put("/api/agent/strategies/{id}", id).header(AUTH, bearer())
+                        .contentType(MediaType.APPLICATION_JSON).content(editBody))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("仅草稿策略可编辑")));
+    }
+
+    @Test
+    void splitRoutesByEditedStrategyLayerRules() throws Exception {
+        // 编辑分层：通道可用性 → 层重映射（双通道→L1/无通道→L2/仅短信→L3/仅邮件→L4），
+        // 与确定性默认（L1 短信/L2 邮件/L3 双通道）显著不同，可证明按规则而不是默认分层路由。
+        String gen = mvc.perform(post("/api/agent/strategies").header(AUTH, bearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"重映射\",\"strategyVersion\":\"v-remap\",\"routeOrder\":[\"sms\",\"email\"]}"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        long sid = Long.parseLong(JsonPath.read(gen, "$.data.id").toString());
+        String editBody = asJson(Map.of(
+                "name", "重映射分层",
+                "layers", List.of(
+                        editLayer("L1", "双通道", "multi", List.of("sms", "email"), 1),
+                        editLayer("L2", "无通道", "none", List.of(), 2),
+                        editLayer("L3", "仅短信", "sms_only", List.of("sms"), 3),
+                        editLayer("L4", "仅邮件", "email_only", List.of("email"), 4))));
+        mvc.perform(put("/api/agent/strategies/{id}", sid).header(AUTH, bearer())
+                        .contentType(MediaType.APPLICATION_JSON).content(editBody))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/agent/strategies/{id}/publish", sid).header(AUTH, bearer()))
+                .andExpect(status().isOk());
+
+        long a = createContact(contact("A", "13800000001", null, highRisk("张伟")));
+        long b = createContact(contact("B", null, "b@example.com", highRisk("王芳")));
+        long c = createContact(contact("C", "13800000003", "c@example.com", highRisk("李静")));
+        long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
+        long snapshot = circle(audience);
+        createTemplate("sms", "短信关怀", "亲爱的${name!}，欢迎回来");
+        long wf = saveCanvas();
+        mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
+                .andExpect(status().isOk());
+
+        String body = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"audienceSnapshotId\":" + snapshot + "}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("SUCCEEDED"))
+                // 双通道 C→L1→sms1；仅短信 A→L3→sms3；仅邮件 B→L4→无 L4 出边→无条件兜底 end
+                .andExpect(jsonPath("$.data.nodes[?(@.key=='split')].output.strategy_version").value("v-remap"))
+                .andExpect(jsonPath("$.data.nodes[?(@.key=='split')].output.byLayer.L1").value(1))
+                .andExpect(jsonPath("$.data.nodes[?(@.key=='split')].output.byLayer.L2").value(0))
+                .andExpect(jsonPath("$.data.nodes[?(@.key=='split')].output.byLayer.L3").value(1))
+                .andExpect(jsonPath("$.data.nodes[?(@.key=='split')].output.byLayer.L4").value(1))
+                .andExpect(jsonPath("$.data.nodes[?(@.key=='split')].output.routed.sms1").value(1))
+                .andExpect(jsonPath("$.data.nodes[?(@.key=='split')].output.routed.sms3").value(1))
+                .andExpect(jsonPath("$.data.nodes[?(@.key=='split')].output.dropped").value(0))
+                .andExpect(jsonPath("$.data.nodes[?(@.key=='end')].contacts").value(1))
+                .andReturn().getResponse().getContentAsString();
+        long exec = executionIdOf(body);
+
+        // 层标签符合编辑后规则：A→L3, B→L4, C→L1（优先级升序命中）
+        assertThat(layerAttributes(a, b, c)).containsExactly("L3", "L4", "L1");
+
+        // 仅 A(C 双通道走 sms1) 与 A(仅短信走 sms3) 实际下发短信；B 落入 end 无下发
+        Integer delivered = jdbc.queryForObject(
+                "SELECT count(*) FROM delivery_record WHERE execution_id = ?", Integer.class, exec);
+        assertThat(delivered).isEqualTo(2);
+
+        // 审计引用生效策略版本
+        String audit = jdbc.queryForObject(
+                "SELECT strategy_version FROM audit_log WHERE action = 'route_split'", String.class);
+        assertThat(audit).isEqualTo("v-remap");
+    }
+
+    /** 层编辑项（对齐后端 StrategyUpdateRequest.LayerEdit）。 */
+    private Map<String, Object> editLayer(String id, String name, String availability,
+                                          List<String> routeOrder, int priority) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", id);
+        m.put("name", name);
+        m.put("channelAvailability", availability);
+        m.put("routeOrder", routeOrder);
+        m.put("priority", priority);
+        return m;
     }
 
     // ---------- helpers（复用 M2/M3 模式） ----------

@@ -3,6 +3,7 @@ package com.easysys.api.controller;
 import com.easysys.api.dto.agent.RoutePreviewRequest;
 import com.easysys.api.dto.agent.RoutePreviewView;
 import com.easysys.api.dto.agent.StrategyRequest;
+import com.easysys.api.dto.agent.StrategyUpdateRequest;
 import com.easysys.api.dto.agent.StrategyView;
 import com.easysys.api.service.RoutePreviewService;
 import com.easysys.api.service.StrategyService;
@@ -12,6 +13,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -53,6 +55,14 @@ public class StrategyController {
     @GetMapping("/strategies/{id}")
     public ApiResponse<StrategyView> get(@PathVariable Long id) {
         return ApiResponse.ok(strategyService.get(id));
+    }
+
+    /** 编辑 draft 策略分层规则（发布后只读，改 = 生成新版本）。 */
+    @PutMapping("/strategies/{id}")
+    public ApiResponse<StrategyView> update(@PathVariable Long id,
+                                            @Valid @RequestBody StrategyUpdateRequest req,
+                                            @RequestAttribute String username) {
+        return ApiResponse.ok(strategyService.update(id, req, username));
     }
 
     @PostMapping("/strategies/{id}/publish")

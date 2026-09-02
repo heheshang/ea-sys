@@ -87,10 +87,11 @@ const audiences = ref<Audience[]>([])
 const dryRunAudienceId = ref<number | null>(null)
 const reportVisible = ref(false)
 
-/* 节点面板（后端 WORKFLOW 节点类型；AGENT_SPLIT 属 M3，面板不开放） */
+/* 节点面板（后端 WORKFLOW 节点类型；AGENT_SPLIT 按发布策略分层分流） */
 const PALETTE: Array<{ type: WorkflowNodeType; label: string }> = [
   { type: 'TRIGGER', label: '触发' },
   { type: 'CONDITION', label: '条件' },
+  { type: 'AGENT_SPLIT', label: 'Agent 分流' },
   { type: 'ACTION', label: '动作' },
   { type: 'UPDATE', label: '更新' },
   { type: 'DELAY', label: '延时' },

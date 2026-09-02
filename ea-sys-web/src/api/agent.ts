@@ -6,6 +6,7 @@ import type {
   RoutePreviewRequest,
   RoutePreviewView,
   StrategyRequest,
+  StrategyUpdateRequest,
   StrategyView,
 } from './types'
 
@@ -36,6 +37,12 @@ export async function publishStrategy(id: number): Promise<StrategyView> {
 /** DELETE /api/agent/strategies/{id} —— 删除策略。 */
 export async function deleteStrategy(id: number): Promise<void> {
   await http.delete<ApiResponse<void>>(`/agent/strategies/${id}`)
+}
+
+/** PUT /api/agent/strategies/{id} —— 编辑草稿策略的层规则（发布后只读）。 */
+export async function updateStrategy(id: number, req: StrategyUpdateRequest): Promise<StrategyView> {
+  const { data } = await http.put<ApiResponse<StrategyView>>(`/agent/strategies/${id}`, req)
+  return data.data
 }
 
 /** POST /api/agent/route-preview —— 路由预览（触达史重排）。 */

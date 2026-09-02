@@ -16,6 +16,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -56,6 +57,8 @@ public class AgentSplitRouter implements AgentSplitHandler {
         LayerStrategy active = strategyService.activeStrategy();
         String strategyVersion = active == null ? "default" : active.getStrategyVersion();
         String source = active == null ? "deterministic" : active.getSource();
+        JsonNode strategyDoc = active == null ? null : parse(active.getStrategy());
+        List<JsonNode> strategyLayers = strategyDoc == null ? List.of() : layersOf(strategyDoc);
         int count = here == null ? 0 : here.size();
 
         WorkflowEdge elseEdge = null;
@@ -69,8 +72,15 @@ public class AgentSplitRouter implements AgentSplitHandler {
             }
         }
 
+        List<String> layerIds = new ArrayList<>(LAYER_IDS);
+        for (JsonNode l : strategyLayers) {
+            String id = l.path("id").asText("");
+            if (!id.isEmpty() && !layerIds.contains(id)) {
+                layerIds.add(id);
+            }
+        }
         Map<String, Long> byLayer = new LinkedHashMap<>();
-        for (String l : LAYER_IDS) {
+        for (String l : layerIds) {
             byLayer.put(l, 0L);
         }
         Map<String, LinkedHashSet<Long>> byTarget = new LinkedHashMap<>();
@@ -79,7 +89,7 @@ public class AgentSplitRouter implements AgentSplitHandler {
         if (here != null) {
             for (Long id : here) {
                 AbstractDagExecutor.MemberContext m = byId.get(id);
-                String layer = m == null ? "L4" : layerFor(m);
+                String layer = m == null ? "L4" : layerFor(m, strategyLayers);
                 byLayer.merge(layer, 1L, Long::sum);
                 WorkflowEdge target = layerEdges.get(layer);
                 if (target == null) {
@@ -151,11 +161,26 @@ public class AgentSplitRouter implements AgentSplitHandler {
         return "AND".equals(op) || "OR".equals(op);
     }
 
-    /** 通道可达性 → 层：双通道 L3 / 仅短信 L1 / 仅邮件 L2 / 无通道 L4（退订渠道不可达）。 */
-    private String layerFor(AbstractDagExecutor.MemberContext m) {
+    /**
+     * 分层解析：优先按发布策略文档的 layers[].rule 求值（通道可达性恰等匹配，
+     * 按 priority 升序首个命中）；无策略 / 无层命中 → 确定性默认分层。
+     */
+    private String layerFor(AbstractDagExecutor.MemberContext m, List<JsonNode> strategyLayers) {
         Map<String, Object> ctx = m.contact();
         boolean sms = reachable(ctx, "phone", "sms");
         boolean email = reachable(ctx, "email", "email");
+        if (!strategyLayers.isEmpty()) {
+            List<JsonNode> ordered = new ArrayList<>(strategyLayers);
+            ordered.sort(Comparator.comparingInt(l -> l.path("priority").asInt(Integer.MAX_VALUE)));
+            for (JsonNode layer : ordered) {
+                String id = layer.path("id").asText("");
+                JsonNode rule = layer.path("rule");
+                if (!id.isEmpty() && rule.isObject() && ruleMatches(rule.path("channel_availability").asText(""), sms, email)) {
+                    return id;
+                }
+            }
+        }
+        // 确定性回退：双通道 L3 / 仅短信 L1 / 仅邮件 L2 / 无通道 L4（退订渠道不可达）
         if (sms && email) {
             return "L3";
         }
@@ -166,6 +191,35 @@ public class AgentSplitRouter implements AgentSplitHandler {
             return "L2";
         }
         return "L4";
+    }
+
+    /** 发布策略文档 layers 数组（含 id + rule）；缺失/非数组 → 空（走确定性回退）。 */
+    private List<JsonNode> layersOf(JsonNode doc) {
+        JsonNode layers = doc.path("layers");
+        if (!layers.isArray() || layers.isEmpty()) {
+            return List.of();
+        }
+        List<JsonNode> out = new ArrayList<>();
+        for (JsonNode l : layers) {
+            if (l.isObject() && !l.path("id").asText("").isEmpty() && l.path("rule").isObject()) {
+                out.add(l);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 层规则命中判定：channel_availability 与成员通道组合恰等匹配。
+     * sms_only = 仅短信可达；email_only = 仅邮件可达；multi = 双通道；none = 无可用通道。
+     */
+    private boolean ruleMatches(String availability, boolean sms, boolean email) {
+        return switch (availability) {
+            case "sms_only" -> sms && !email;
+            case "email_only" -> !sms && email;
+            case "multi" -> sms && email;
+            case "none" -> !sms && !email;
+            default -> false;
+        };
     }
 
     private boolean reachable(Map<String, Object> ctx, String field, String channel) {

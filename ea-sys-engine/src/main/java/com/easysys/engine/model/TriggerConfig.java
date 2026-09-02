@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
  * <ul>
  *   <li>SCHEDULED → cron + timezone + audienceId（每次触发重新圈选该人群快照）</li>
  *   <li>EVENT → eventName + 可选 eventFilter</li>
+ *   <li>IMMEDIATE → audienceId（发布成功后立即圈选该人群快照执行一次）</li>
  *   <li>MANUAL / API → 无需额外配置</li>
  * </ul>
  */
@@ -47,5 +48,9 @@ public record TriggerConfig(
 
     public boolean isEvent() {
         return TriggerType.EVENT.name().equals(triggerType);
+    }
+
+    public boolean isImmediate() {
+        return TriggerType.IMMEDIATE.name().equals(triggerType);
     }
 }

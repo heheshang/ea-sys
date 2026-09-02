@@ -115,7 +115,7 @@
 
 ```json
 {
-  "triggerType": "SCHEDULED | EVENT | MANUAL | API",
+  "triggerType": "SCHEDULED | EVENT | MANUAL | API | IMMEDIATE",
   "cron": "0 0 10 * * ?",
   "timezone": "Asia/Shanghai",
   "eventName": "ORDER_PAID",
@@ -140,7 +140,7 @@
 |---|---|---|
 | id / tenant_id / workflow_id | | |
 | workflow_version | int | 执行时的工作流版本 |
-| trigger_type | varchar | SCHEDULED / EVENT / MANUAL / API |
+| trigger_type | varchar | SCHEDULED / EVENT / MANUAL / API / IMMEDIATE |
 | trigger_payload | jsonb | 触发上下文（事件数据、人员标识）|
 | audience_snapshot_id | bigint | 定时 / 手动触发的快照；事件触发为空 |
 | status | varchar | running / succeeded / failed / partial / canceled |

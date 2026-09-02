@@ -1036,7 +1036,7 @@ onUnmounted(() => {
                 </div>
               </el-form-item>
             </template>
-            <!-- TRIGGER：触发方式（定时 / 行为事件 / API / 手动） -->
+            <!-- TRIGGER：触发方式（定时 / 行为事件 / API / 手动 / 立即） -->
             <template v-else-if="selectedNode && nodeTypeOf(selectedNode) === 'TRIGGER'">
               <el-form-item label="触发方式">
                 <el-select
@@ -1048,6 +1048,7 @@ onUnmounted(() => {
                   <el-option value="SCHEDULED" label="定时触达（cron 圈选）" />
                   <el-option value="EVENT" label="行为事件触发" />
                   <el-option value="API" label="API 触发（外部系统入流）" />
+                  <el-option value="IMMEDIATE" label="立即触发（发布后执行一次）" />
                 </el-select>
               </el-form-item>
 
@@ -1078,6 +1079,19 @@ onUnmounted(() => {
                 </el-form-item>
               </template>
 
+              <template v-else-if="nodeConfig(selectedNode).triggerType === 'IMMEDIATE'">
+                <el-form-item label="人群">
+                  <el-select
+                    :model-value="selectedNode ? nodeConfig(selectedNode).audienceId : ''"
+                    placeholder="选择圈选人群"
+                    style="width: 100%"
+                    @update:model-value="(v: number) => updateNodeConfig('audienceId', v)"
+                  >
+                    <el-option v-for="a in audiences" :key="a.id" :label="a.name" :value="a.id" />
+                  </el-select>
+                </el-form-item>
+              </template>
+
               <template v-else-if="nodeConfig(selectedNode).triggerType === 'EVENT'">
                 <el-form-item label="事件名">
                   <el-input
@@ -1098,7 +1112,7 @@ onUnmounted(() => {
               </template>
 
               <template v-else>
-                <div class="config-hint">手动触达：从首页人群列表发起；API 触发由外部系统按进化流 ID 携带单用户载荷调用接口。</div>
+                <div class="config-hint">手动触达：从首页人群列表发起；API 触发由外部系统按进化流 ID 携带单用户载荷调用接口；立即触发：发布成功后立即对配置人群执行一次。</div>
               </template>
             </template>
 

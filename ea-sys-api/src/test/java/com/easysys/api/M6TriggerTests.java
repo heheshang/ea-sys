@@ -41,6 +41,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -50,7 +51,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *   API 触发 → execution.trigger_type='API'，单用户入流，ACTION 真实触达落 delivery_record；
  *   事件触发 → 导入事件匹配 EVENT 流程单用户执行（trigger_type='EVENT'），eventFilter 不命中不执行；
  *   定时触发 → 到点圈选快照批量执行（trigger_type='SCHEDULED'，audience_snapshot_id 落库，member 触达）；
- *   防双跑 → 同 cron 槽位连续两次轮询仅产生一条 execution（RLock + 槽位记录）。
+ *   防双跑 → 同 cron 槽位连续两次轮询仅产生一条 execution（RLock + 槽位记录）；
+ *   立即触发 → 发布成功后即刻圈选快照批量执行（trigger_type='IMMEDIATE'），每次发布执行一次；
+ *   缺 audienceId 的 IMMEDIATE 画布保存即被校验拒绝。
  * 数据访问一律走 MyBatis-Plus mapper，禁 JdbcTemplate。
  */
 @Testcontainers
@@ -250,6 +253,71 @@ class M6TriggerTests {
         triggerService.scanScheduledDues();
 
         assertThat(executionsOf(wf)).hasSize(1);
+    }
+
+    // ---------- 5. 立即触发：发布成功后即刻圈选快照批量执行 ----------
+
+    @Test
+    void immediateTriggerRunsOnPublish() throws Exception {
+        createContact(contact("imm-user", "13400000022", null, highRisk("立即")));
+        long template = createTemplate("sms", "短信关怀", "Hi ${name!}");
+        long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
+        long wf = saveCanvas(Map.of("triggerType", "IMMEDIATE", "audienceId", audience), template);
+
+        publish(wf);
+
+        // 发布即执行：execution.trigger_type='IMMEDIATE'，快照圈选 1 人并真实下发
+        List<Execution> executions = executionsOf(wf);
+        assertThat(executions).hasSize(1);
+        assertThat(executions.get(0).getTriggerType()).isEqualTo("IMMEDIATE");
+        Long snapshotId = executions.get(0).getAudienceSnapshotId();
+        assertThat(snapshotId).isNotNull();
+        Long members = inTenant(() -> audienceSnapshotMemberMapper.selectCount(
+                Wrappers.<AudienceSnapshotMember>lambdaQuery()
+                        .eq(AudienceSnapshotMember::getSnapshotId, snapshotId)));
+        assertThat(members).isEqualTo(1L);
+        Long touched = inTenant(() -> deliveryRecordMapper.selectCount(
+                Wrappers.<DeliveryRecord>lambdaQuery().eq(DeliveryRecord::getExecutionId, executions.get(0).getId())));
+        assertThat(touched).isEqualTo(1L);
+    }
+
+    /** 语义：每次发布都立即执行一次（无 cron 槽位，不依赖轮询与防双跑）。 */
+    @Test
+    void immediateTriggerRunsAgainOnRepublish() throws Exception {
+        createContact(contact("imm2-user", "13400000021", null, highRisk("再发布")));
+        long template = createTemplate("sms", "短信关怀", "Hi ${name!}");
+        long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
+        Map<String, Object> trigger = Map.of("triggerType", "IMMEDIATE", "audienceId", audience);
+        String body = canvasBody("m6-imm2", "再发布", trigger, template);
+        String s = mvc.perform(post("/api/workflows").header(AUTH, bearer())
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        long wf = Long.parseLong(JsonPath.read(s, "$.data.id").toString());
+
+        publish(wf); // v1 发布 → 第 1 次执行
+        // 编辑新版本后再次发布（新草稿版本 v2）→ 第 2 次执行
+        mvc.perform(put("/api/workflows/{id}", wf).header(AUTH, bearer())
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0));
+        publish(wf);
+
+        List<Execution> executions = executionsOf(wf);
+        assertThat(executions).hasSize(2);
+        assertThat(executions.get(0).getTriggerType()).isEqualTo("IMMEDIATE");
+        assertThat(executions.get(1).getTriggerType()).isEqualTo("IMMEDIATE");
+    }
+
+    @Test
+    void immediateTriggerWithoutAudienceRejectedAtSave() throws Exception {
+        long template = createTemplate("sms", "短信关怀", "Hi ${name!}");
+        String body = canvasBody("m6-imm3", "缺人群", Map.of("triggerType", "IMMEDIATE"), template);
+        mvc.perform(post("/api/workflows").header(AUTH, bearer())
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("立即触发缺少 audienceId 配置")));
     }
 
     // ---------- helpers ----------

@@ -4,7 +4,8 @@ public enum TriggerType {
     SCHEDULED,
     EVENT,
     MANUAL,
-    API;
+    API,
+    IMMEDIATE;
 
     /** 严格名解析；非法/空 → null（校验层据此报配置错误）。 */
     public static TriggerType of(String name) {

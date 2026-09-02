@@ -125,7 +125,9 @@ public class PlanConsistencyValidator {
         boolean compatible = switch (planType) {
             case "TIMED" -> TriggerType.SCHEDULED.name().equals(wfType);
             case "EVENT" -> TriggerType.EVENT.name().equals(wfType);
-            default -> TriggerType.MANUAL.name().equals(wfType) || TriggerType.API.name().equals(wfType);
+            // IMMEDIATE（发布即执行）无定时/事件配置，归手动系与 MANUAL 计划兼容
+            default -> TriggerType.MANUAL.name().equals(wfType) || TriggerType.API.name().equals(wfType)
+                    || TriggerType.IMMEDIATE.name().equals(wfType);
         };
         if (!compatible) {
             return new PlanValidationView.Dimension("trigger", BLOCKED,

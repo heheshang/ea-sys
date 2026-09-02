@@ -84,11 +84,13 @@ public class WorkflowController {
         return ApiResponse.ok(workflowService.snapshots(id));
     }
 
-    /** 发布当前草稿版本（旧发布行归档）。 */
+    /** 发布当前草稿版本（旧发布行归档）；TRIGGER 为 IMMEDIATE 的流程发布成功后立即执行一次。 */
     @PostMapping("/{id}/publish")
     public ApiResponse<WorkflowView> publish(@PathVariable Long id,
                                              @RequestAttribute String username) {
-        return ApiResponse.ok(workflowService.publish(id, username));
+        WorkflowView view = workflowService.publish(id, username);
+        triggerService.fireImmediate(id);
+        return ApiResponse.ok(view);
     }
 
     /** 干跑：对已发布版本 + 快照成员模拟执行，返回报告。 */

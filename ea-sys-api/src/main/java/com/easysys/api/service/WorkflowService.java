@@ -369,6 +369,29 @@ public class WorkflowService {
                 TriggerType.SCHEDULED.name(), payloadJson(payload));
     }
 
+    /**
+     * 立即触发执行：发布成功后即时圈选快照批量执行（triggerType=IMMEDIATE）。
+     * 触发方（TriggerService.fireImmediate）负责圈选；此处仅校验并落 Execution，
+     * 画布非法 → 静默跳过，发布不阻断。
+     */
+    @Transactional
+    public void executeImmediate(Workflow wf, TriggerConfig tc, Long snapshotId) {
+        if (!validateRows(wf).isEmpty()) {
+            return;
+        }
+        AudienceSnapshot snap = snapshotMapper.selectById(snapshotId);
+        if (snap == null || !"ready".equals(snap.getStatus())) {
+            return;
+        }
+        WorkflowSnapshot ws = canvasOf(wf);
+        List<AbstractDagExecutor.MemberContext> members = loadMembers(snap);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("audienceId", tc.audienceId());
+        payload.put("fireTime", Instant.now().toString());
+        workflowExecutor.execute(wf, ws.nodes, ws.edges, snapshotId, members, false,
+                TriggerType.IMMEDIATE.name(), payloadJson(payload));
+    }
+
     /** 单用户触发执行（EVENT/API）：入流载荷置于 event 映射，条件节点可按 event.* 路由。 */
     @Transactional
     public void executeSingle(Workflow wf, Long contactId, Map<String, Object> eventPayload, String triggerType) {
@@ -546,6 +569,9 @@ public class WorkflowService {
                 }
                 if (tc.isScheduled() && tc.audienceId() == null) {
                     errors.add("TRIGGER 节点 " + n.key() + " 定时触发缺少 audienceId 配置");
+                }
+                if (tc.isImmediate() && tc.audienceId() == null) {
+                    errors.add("TRIGGER 节点 " + n.key() + " 立即触发缺少 audienceId 配置");
                 }
                 if (tc.isEvent() && (tc.eventName() == null || tc.eventName().isBlank())) {
                     errors.add("TRIGGER 节点 " + n.key() + " 事件触发缺少 eventName 配置");

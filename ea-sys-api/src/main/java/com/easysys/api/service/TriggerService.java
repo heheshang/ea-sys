@@ -37,6 +37,7 @@ import java.util.TimeZone;
  *       逐流程 Redisson RLock 防并发双跑，圈选 audienceId 快照批量执行。</li>
  *   <li><b>事件</b>：事件导入时按 eventName 匹配 EVENT 流程，eventFilter DSL 求值命中后单用户执行。</li>
  *   <li><b>API</b>：外部系统携带单用户载荷入流（triggerType=API）。</li>
+ *   <li><b>立即</b>：发布成功后即刻圈选 audienceId 快照批量执行一次（triggerType=IMMEDIATE）。</li>
  * </ul>
  * 轮询线程无 HTTP 租户上下文，故按行租户分别 set/clear {@link TenantContext}；
  * 事件/API 路径沿用调用方（HTTP 请求）的租户上下文。
@@ -148,6 +149,39 @@ public class TriggerService {
             } catch (Exception ex) {
                 log.warn("事件触发执行失败 event={} workflowId={}", eventName, wf.getRefId(), ex);
             }
+        }
+    }
+
+    /**
+     * 立即触发：已发布流程 TRIGGER 配置为 IMMEDIATE 时，发布成功后即刻圈选 audienceId
+     * 快照批量执行一次（triggerType=IMMEDIATE）。调用方（发布请求线程）已设租户上下文；
+     * 失败仅告警不阻断发布（与定时调度同策略）。
+     */
+    public void fireImmediate(Long refId) {
+        Long tenantId = TenantContext.require();
+        Workflow wf = workflowMapper.selectOne(new LambdaQueryWrapper<Workflow>()
+                .eq(Workflow::getRefId, refId)
+                .eq(Workflow::getTenantId, tenantId)
+                .eq(Workflow::getStatus, "published")
+                .last("LIMIT 1"));
+        if (wf == null) {
+            return;
+        }
+        TriggerConfig tc;
+        try {
+            tc = triggerConfigOf(wf);
+        } catch (Exception e) {
+            log.warn("立即触发配置读取失败 tenantId={} workflowId={}", tenantId, refId, e);
+            return;
+        }
+        if (!tc.isImmediate() || tc.audienceId() == null) {
+            return; // 非立即触发 / 缺人群 → 静默跳过，发布不阻断
+        }
+        try {
+            SnapshotResponse snap = audienceService.circle(tc.audienceId());
+            workflowService.executeImmediate(wf, tc, snap.id());
+        } catch (Exception e) {
+            log.warn("立即触发执行失败 tenantId={} workflowId={}", tenantId, refId, e);
         }
     }
 

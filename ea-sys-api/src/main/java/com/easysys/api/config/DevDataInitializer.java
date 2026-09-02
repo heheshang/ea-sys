@@ -3,12 +3,12 @@ package com.easysys.api.config;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.easysys.api.entity.SysUser;
 import com.easysys.api.mapper.SysUserMapper;
+import com.easysys.api.mapper.TenantMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Profile;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Component;
 
@@ -21,17 +21,17 @@ public class DevDataInitializer implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(DevDataInitializer.class);
 
-    private final JdbcTemplate jdbc;
+    private final TenantMapper tenantMapper;
     private final SysUserMapper userMapper;
 
-    public DevDataInitializer(JdbcTemplate jdbc, SysUserMapper userMapper) {
-        this.jdbc = jdbc;
+    public DevDataInitializer(TenantMapper tenantMapper, SysUserMapper userMapper) {
+        this.tenantMapper = tenantMapper;
         this.userMapper = userMapper;
     }
 
     @Override
     public void run(ApplicationArguments args) {
-        jdbc.update("INSERT INTO tenant (id, name) VALUES (1, 'dev-tenant') ON CONFLICT (id) DO NOTHING");
+        tenantMapper.insertIgnore(1L, "dev-tenant");
         SysUser admin = userMapper.selectOne(
                 new LambdaQueryWrapper<SysUser>().eq(SysUser::getUsername, "admin").last("limit 1"));
         if (admin == null) {

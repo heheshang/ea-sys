@@ -1,5 +1,10 @@
 package com.easysys.api;
 
+import com.easysys.api.mapper.ContactMapper;
+import com.easysys.api.mapper.TenantMapper;
+import com.easysys.common.tenant.TenantContext;
+import com.easysys.common.tenant.TenantInfo;
+import com.easysys.engine.mapper.WorkflowMapper;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -8,7 +13,6 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.http.MediaType;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -20,6 +24,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -47,7 +52,13 @@ class M1AudienceTests {
     MockMvc mvc;
 
     @Autowired
-    JdbcTemplate jdbc;
+    WorkflowMapper workflowMapper;
+
+    @Autowired
+    ContactMapper contactMapper;
+
+    @Autowired
+    TenantMapper tenantMapper;
 
     private static final String AUTH = "Authorization";
 
@@ -56,8 +67,7 @@ class M1AudienceTests {
     @BeforeEach
     void login() throws Exception {
         // 测试间数据隔离：业务表全清（tenant/sys_user 种子不动）
-        jdbc.update("TRUNCATE contact_tag, contact_attribute, contact, audience_snapshot_member, " +
-                "audience_snapshot, audience RESTART IDENTITY CASCADE");
+        inTenant(workflowMapper::testTruncateAll);
         String body = mvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"username\":\"admin\",\"password\":\"admin123\"}"))
@@ -108,10 +118,9 @@ class M1AudienceTests {
     void tenantIsolationBlocksCrossTenantReads() throws Exception {
         // 租户 2 直插数据（绕开 API 租户上下文），验证租户 1 不可见；
         // 显式 id=99999 避开 BIGSERIAL 序列（DevDataInitializer 显式插 id=1 不推进序列）
-        jdbc.update("INSERT INTO tenant (id, name) VALUES (?, 't2') ON CONFLICT (id) DO NOTHING", 99999L);
+        tenantMapper.insertIgnore(99999L, "t2");
         Long t2 = 99999L;
-        jdbc.update("INSERT INTO contact (tenant_id, external_id, phone, status) VALUES (?, ?, ?, 'active')",
-                t2, "EXT-T2", "13900000000");
+        contactMapper.testInsertRawContact(t2, "EXT-T2", "13900000000");
 
         createContact(contactBody("EXT-T1", "13700000000", Map.of(), List.of()));
 
@@ -336,5 +345,24 @@ class M1AudienceTests {
     private org.springframework.test.web.servlet.ResultActions putJson(String path, String body) throws Exception {
         return mvc.perform(put(path).header(AUTH, bearer())
                 .contentType(MediaType.APPLICATION_JSON).content(body));
+    }
+
+    /** 在默认租户上下文内执行 mapper 调用（租户插件要求）。 */
+    private <T> T inTenant(Supplier<T> action) {
+        TenantContext.set(new TenantInfo(1L));
+        try {
+            return action.get();
+        } finally {
+            TenantContext.clear();
+        }
+    }
+
+    private void inTenant(Runnable action) {
+        TenantContext.set(new TenantInfo(1L));
+        try {
+            action.run();
+        } finally {
+            TenantContext.clear();
+        }
     }
 }

@@ -1,5 +1,13 @@
 package com.easysys.api;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.easysys.api.entity.Contact;
+import com.easysys.api.mapper.ContactMapper;
+import com.easysys.common.tenant.TenantContext;
+import com.easysys.common.tenant.TenantInfo;
+import com.easysys.engine.entity.DeliveryRecord;
+import com.easysys.engine.mapper.DeliveryRecordMapper;
+import com.easysys.engine.mapper.WorkflowMapper;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -9,7 +17,6 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.http.MediaType;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -22,6 +29,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -58,7 +66,13 @@ class M3TouchTests {
     MockMvc mvc;
 
     @Autowired
-    JdbcTemplate jdbc;
+    WorkflowMapper workflowMapper;
+
+    @Autowired
+    DeliveryRecordMapper deliveryRecordMapper;
+
+    @Autowired
+    ContactMapper contactMapper;
 
     @Autowired
     RedissonClient redisson;
@@ -69,9 +83,7 @@ class M3TouchTests {
 
     @BeforeEach
     void login() throws Exception {
-        jdbc.update("TRUNCATE delivery_record, template, execution_node_state, execution, " +
-                "workflow_edge, workflow_node, workflow, contact_tag, contact_attribute, contact, " +
-                "audience_snapshot_member, audience_snapshot, audience RESTART IDENTITY CASCADE");
+        inTenant(workflowMapper::testTruncateAll);
         // 频率计数键跨测试隔离（TRUNCATE 会重置 contact id，Redis 必须同步清空）
         redisson.getKeys().flushall();
         String body = mvc.perform(post("/api/auth/login")
@@ -117,19 +129,21 @@ class M3TouchTests {
         long executionId = Long.parseLong(JsonPath.read(body, "$.data.executionId").toString());
 
         // 下发记录：每人一行，模板渲染展开
-        Integer rows = jdbc.queryForObject("SELECT count(*) FROM delivery_record WHERE execution_id = ?",
-                Integer.class, executionId);
-        assertThat(rows).isEqualTo(2);
-        List<String> contents = jdbc.queryForList(
-                "SELECT content FROM delivery_record WHERE execution_id = ? ORDER BY contact_id", String.class,
-                executionId);
+        Long rows = inTenant(() -> deliveryRecordMapper.selectCount(
+                Wrappers.<DeliveryRecord>lambdaQuery().eq(DeliveryRecord::getExecutionId, executionId)));
+        assertThat(rows).isEqualTo(2L);
+        List<String> contents = inTenant(() -> deliveryRecordMapper.selectList(
+                        Wrappers.<DeliveryRecord>lambdaQuery().eq(DeliveryRecord::getExecutionId, executionId)
+                                .orderByAsc(DeliveryRecord::getContactId)))
+                .stream().map(DeliveryRecord::getContent).toList();
         assertThat(contents).containsExactly("亲爱的张伟，您有一份专属福利待领取", "亲爱的李静，您有一份专属福利待领取");
-        List<String> statuses = jdbc.queryForList(
-                "SELECT DISTINCT status FROM delivery_record WHERE execution_id = ?", String.class, executionId);
+        List<String> statuses = inTenant(() -> deliveryRecordMapper.selectList(
+                        Wrappers.<DeliveryRecord>lambdaQuery().eq(DeliveryRecord::getExecutionId, executionId)))
+                .stream().map(DeliveryRecord::getStatus).distinct().toList();
         assertThat(statuses).containsExactly("DELIVERED");
-        Long channelMsgCount = jdbc.queryForObject(
-                "SELECT count(*) FROM delivery_record WHERE execution_id = ? AND channel_msg_id LIKE 'console-%'",
-                Long.class, executionId);
+        Long channelMsgCount = inTenant(() -> deliveryRecordMapper.selectCount(
+                Wrappers.<DeliveryRecord>lambdaQuery().eq(DeliveryRecord::getExecutionId, executionId)
+                        .likeRight(DeliveryRecord::getChannelMsgId, "console-")));
         assertThat(channelMsgCount).isEqualTo(2L);
 
         // 报告重查与执行一致
@@ -174,9 +188,9 @@ class M3TouchTests {
         long exec2 = Long.parseLong(JsonPath.read(second, "$.data.executionId").toString());
 
         // 两次执行合计仍只下发 2 条（频率拦截先行，无重复触达）
-        Integer total = jdbc.queryForObject(
-                "SELECT count(*) FROM delivery_record WHERE execution_id IN (?, ?)", Integer.class, exec1, exec2);
-        assertThat(total).isEqualTo(2);
+        Long total = inTenant(() -> deliveryRecordMapper.selectCount(
+                Wrappers.<DeliveryRecord>lambdaQuery().in(DeliveryRecord::getExecutionId, exec1, exec2)));
+        assertThat(total).isEqualTo(2L);
     }
 
     // ---------- 治理拦截 ----------
@@ -187,7 +201,9 @@ class M3TouchTests {
         long a = createContact(contactBody("A", "13800000001", highRisk("张伟"), List.of()));
         long b = createContact(contactBody("B", "13800000002", highRisk("王芳"), List.of(), "silent"));
         long c = createContact(contactBody("C", "13800000003", highRisk("李静"), List.of()));
-        jdbc.update("UPDATE contact SET suppression = '{\"channels\":[\"sms\"]}'::jsonb WHERE id = ?", c);
+        Contact c1 = inTenant(() -> contactMapper.selectById(c));
+        c1.setSuppression("{\"channels\":[\"sms\"]}");
+        inTenant(() -> contactMapper.updateById(c1));
 
         long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
         long snapshot = circle(audience);
@@ -211,8 +227,10 @@ class M3TouchTests {
         long executionId = Long.parseLong(JsonPath.read(body, "$.data.executionId").toString());
 
         // 治理拦截不产生下发记录：仅 A 一行
-        List<Long> contacts = jdbc.queryForList(
-                "SELECT contact_id FROM delivery_record WHERE execution_id = ?", Long.class, executionId);
+        List<Long> contacts = inTenant(() -> deliveryRecordMapper.selectList(
+                        Wrappers.<DeliveryRecord>lambdaQuery().eq(DeliveryRecord::getExecutionId, executionId)
+                                .orderByAsc(DeliveryRecord::getContactId)))
+                .stream().map(DeliveryRecord::getContactId).toList();
         assertThat(contacts).containsExactly(a);
         assertThat(contacts).doesNotContain(b, c);
     }
@@ -395,5 +413,24 @@ class M3TouchTests {
 
     private String cond(String field, String op, Object value) {
         return "{\"field\":\"" + field + "\",\"op\":\"" + op + "\",\"value\":" + asJson(value) + "}";
+    }
+
+    /** 在默认租户上下文内执行 mapper 调用（租户插件要求）。 */
+    private <T> T inTenant(Supplier<T> action) {
+        TenantContext.set(new TenantInfo(1L));
+        try {
+            return action.get();
+        } finally {
+            TenantContext.clear();
+        }
+    }
+
+    private void inTenant(Runnable action) {
+        TenantContext.set(new TenantInfo(1L));
+        try {
+            action.run();
+        } finally {
+            TenantContext.clear();
+        }
     }
 }

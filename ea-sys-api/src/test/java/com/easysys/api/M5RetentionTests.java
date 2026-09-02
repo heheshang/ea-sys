@@ -1,5 +1,18 @@
 package com.easysys.api;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.easysys.api.entity.AgentAudit;
+import com.easysys.api.entity.AudienceSnapshot;
+import com.easysys.api.entity.ContactAttribute;
+import com.easysys.api.mapper.AgentAuditMapper;
+import com.easysys.api.mapper.AudienceSnapshotMapper;
+import com.easysys.api.mapper.ContactAttributeMapper;
+import com.easysys.api.mapper.EventMapper;
+import com.easysys.common.tenant.TenantContext;
+import com.easysys.common.tenant.TenantInfo;
+import com.easysys.engine.entity.DeliveryRecord;
+import com.easysys.engine.mapper.DeliveryRecordMapper;
+import com.easysys.engine.mapper.WorkflowMapper;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -9,7 +22,6 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.http.MediaType;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -24,6 +36,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.closeTo;
@@ -62,7 +75,22 @@ class M5RetentionTests {
     MockMvc mvc;
 
     @Autowired
-    JdbcTemplate jdbc;
+    WorkflowMapper workflowMapper;
+
+    @Autowired
+    DeliveryRecordMapper deliveryRecordMapper;
+
+    @Autowired
+    AudienceSnapshotMapper audienceSnapshotMapper;
+
+    @Autowired
+    ContactAttributeMapper contactAttributeMapper;
+
+    @Autowired
+    AgentAuditMapper agentAuditMapper;
+
+    @Autowired
+    EventMapper eventMapper;
 
     @Autowired
     RedissonClient redisson;
@@ -73,10 +101,7 @@ class M5RetentionTests {
 
     @BeforeEach
     void login() throws Exception {
-        jdbc.update("TRUNCATE delivery_record, template, execution_node_state, execution, " +
-                "workflow_edge, workflow_node, workflow, contact_tag, contact_attribute, contact, " +
-                "audience_snapshot_member, audience_snapshot, audience, audit_log, layer_strategy, event " +
-                "RESTART IDENTITY CASCADE");
+        inTenant(workflowMapper::testTruncateAll);
         redisson.getKeys().flushall();
         String body = mvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -107,7 +132,7 @@ class M5RetentionTests {
                 .andExpect(jsonPath("$.data.imported").value(0))
                 .andExpect(jsonPath("$.data.duplicates").value(1));
 
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM event", Integer.class)).isEqualTo(1);
+        assertThat(inTenant(() -> eventMapper.selectCount(null))).isEqualTo(1L);
     }
 
     // ---------- 2. 漏斗：圈选→执行→触达 ----------
@@ -119,8 +144,7 @@ class M5RetentionTests {
         createContact(contact("C", "13800000003", null, highRisk("李静")));
         long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
         long snapshot = circle(audience);
-        assertThat(jdbc.queryForObject("SELECT member_count FROM audience_snapshot WHERE id = ?",
-                Integer.class, snapshot)).isEqualTo(3);
+        assertThat(inTenant(() -> audienceSnapshotMapper.selectById(snapshot)).getMemberCount()).isEqualTo(3);
         createTemplate("sms", "短信关怀", "亲爱的${name!}，欢迎回来");
         long wf = saveSmokeCanvas("m5-funnel", "漏斗冒烟");
         mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
@@ -131,8 +155,9 @@ class M5RetentionTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("SUCCEEDED"))
                 .andReturn().getResponse().getContentAsString();
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM delivery_record WHERE execution_id = ?",
-                Integer.class, executionIdOf(exec))).isEqualTo(3);
+        assertThat(inTenant(() -> deliveryRecordMapper.selectCount(
+                Wrappers.<DeliveryRecord>lambdaQuery().eq(DeliveryRecord::getExecutionId, executionIdOf(exec)))))
+                .isEqualTo(3L);
 
         // 工作流维度
         mvc.perform(get("/api/retention/funnel").header(AUTH, bearer())
@@ -191,8 +216,9 @@ class M5RetentionTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("SUCCEEDED"))
                 .andReturn().getResponse().getContentAsString();
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM delivery_record WHERE execution_id = ?",
-                Integer.class, executionIdOf(exec))).isEqualTo(3);
+        assertThat(inTenant(() -> deliveryRecordMapper.selectCount(
+                Wrappers.<DeliveryRecord>lambdaQuery().eq(DeliveryRecord::getExecutionId, executionIdOf(exec)))))
+                .isEqualTo(3L);
 
         mvc.perform(get("/api/retention/channel-effect").header(AUTH, bearer()).param("days", "30"))
                 .andExpect(status().isOk())
@@ -247,8 +273,7 @@ class M5RetentionTests {
         importEvents(c, "page_view", Instant.now().minusSeconds(2 * 86400L));
         long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
         long snapshot = circle(audience);
-        assertThat(jdbc.queryForObject("SELECT member_count FROM audience_snapshot WHERE id = ?",
-                Integer.class, snapshot)).isEqualTo(3);
+        assertThat(inTenant(() -> audienceSnapshotMapper.selectById(snapshot)).getMemberCount()).isEqualTo(3);
 
         mvc.perform(post("/api/agent/churn/scan").header(AUTH, bearer())
                         .contentType(MediaType.APPLICATION_JSON)
@@ -267,10 +292,11 @@ class M5RetentionTests {
         assertThat(tiers).containsExactly("HIGH", "HIGH", "LOW");
 
         // 审计：CHURN + churn_scan + 规则版本 + schema 通过
-        String audit = jdbc.queryForObject(
-                "SELECT agent_type || '|' || action || '|' || status || '|' || schema_valid || '|' || strategy_version"
-                        + " FROM audit_log ORDER BY id DESC LIMIT 1", String.class);
-        assertThat(audit).isEqualTo("CHURN|churn_scan|SUCCESS|true|rule");
+        AgentAudit audit = inTenant(() -> agentAuditMapper.selectList(
+                Wrappers.<AgentAudit>lambdaQuery().orderByDesc(AgentAudit::getId).last("limit 1"))).get(0);
+        assertThat(audit.getAgentType() + "|" + audit.getAction() + "|" + audit.getStatus() + "|"
+                + audit.getSchemaValid() + "|" + audit.getStrategyVersion())
+                .isEqualTo("CHURN|churn_scan|SUCCESS|true|rule");
     }
 
     // ---------- helpers（复用 M2/M3/M4 模式） ----------
@@ -289,10 +315,12 @@ class M5RetentionTests {
     }
 
     private List<String> churnTiers(Long... ids) {
-        return jdbc.queryForList(
-                "SELECT btrim(value::text, '\"') FROM contact_attribute WHERE key = 'churn_risk' AND contact_id IN ("
-                        + String.join(",", java.util.Arrays.stream(ids).map(String::valueOf).toList())
-                        + ") ORDER BY contact_id", String.class);
+        // jsonb 字符串读出带引号（如 "HIGH"），按 btrim 语义去引号
+        return inTenant(() -> contactAttributeMapper.selectList(
+                        Wrappers.<ContactAttribute>lambdaQuery().eq(ContactAttribute::getKey, "churn_risk")
+                                .in(ContactAttribute::getContactId, java.util.Arrays.asList(ids))
+                                .orderByAsc(ContactAttribute::getContactId)))
+                .stream().map(ca -> ca.getValue().replaceAll("^\"|\"$", "")).toList();
     }
 
     private long saveSmokeCanvas(String name, String description) throws Exception {
@@ -430,5 +458,24 @@ class M5RetentionTests {
 
     private String cond(String field, String op, Object value) {
         return "{\"field\":\"" + field + "\",\"op\":\"" + op + "\",\"value\":" + asJson(value) + "}";
+    }
+
+    /** 在默认租户上下文内执行 mapper 调用（租户插件要求）。 */
+    private <T> T inTenant(Supplier<T> action) {
+        TenantContext.set(new TenantInfo(1L));
+        try {
+            return action.get();
+        } finally {
+            TenantContext.clear();
+        }
+    }
+
+    private void inTenant(Runnable action) {
+        TenantContext.set(new TenantInfo(1L));
+        try {
+            action.run();
+        } finally {
+            TenantContext.clear();
+        }
     }
 }

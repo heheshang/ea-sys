@@ -1,5 +1,17 @@
 package com.easysys.api;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.easysys.api.entity.AgentAudit;
+import com.easysys.api.entity.ContactAttribute;
+import com.easysys.api.entity.LayerStrategy;
+import com.easysys.api.mapper.AgentAuditMapper;
+import com.easysys.api.mapper.ContactAttributeMapper;
+import com.easysys.api.mapper.LayerStrategyMapper;
+import com.easysys.common.tenant.TenantContext;
+import com.easysys.common.tenant.TenantInfo;
+import com.easysys.engine.entity.DeliveryRecord;
+import com.easysys.engine.mapper.DeliveryRecordMapper;
+import com.easysys.engine.mapper.WorkflowMapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
@@ -10,7 +22,6 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.http.MediaType;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -23,6 +34,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -62,7 +74,19 @@ class M4AgentTests {
     MockMvc mvc;
 
     @Autowired
-    JdbcTemplate jdbc;
+    WorkflowMapper workflowMapper;
+
+    @Autowired
+    DeliveryRecordMapper deliveryRecordMapper;
+
+    @Autowired
+    ContactAttributeMapper contactAttributeMapper;
+
+    @Autowired
+    AgentAuditMapper agentAuditMapper;
+
+    @Autowired
+    LayerStrategyMapper layerStrategyMapper;
 
     @Autowired
     RedissonClient redisson;
@@ -73,10 +97,7 @@ class M4AgentTests {
 
     @BeforeEach
     void login() throws Exception {
-        jdbc.update("TRUNCATE delivery_record, template, execution_node_state, execution, " +
-                "workflow_edge, workflow_node, workflow, contact_tag, contact_attribute, contact, " +
-                "audience_snapshot_member, audience_snapshot, audience, audit_log, layer_strategy " +
-                "RESTART IDENTITY CASCADE");
+        inTenant(workflowMapper::testTruncateAll);
         redisson.getKeys().flushall();
         String body = mvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -119,9 +140,10 @@ class M4AgentTests {
                 .andReturn().getResponse().getContentAsString();
 
         // 每层恰好 1 人：A→sms1, B→sms2, C→sms3（各经 sms 通道下发，每人一行）
-        List<String> contacts = jdbc.queryForList(
-                "SELECT contact_id::text FROM delivery_record WHERE execution_id = ? ORDER BY contact_id",
-                String.class, executionIdOf(body));
+        List<String> contacts = inTenant(() -> deliveryRecordMapper.selectList(
+                        Wrappers.<DeliveryRecord>lambdaQuery().eq(DeliveryRecord::getExecutionId, executionIdOf(body))
+                                .orderByAsc(DeliveryRecord::getContactId)))
+                .stream().map(d -> String.valueOf(d.getContactId())).toList();
         assertThat(contacts).containsExactly(String.valueOf(a), String.valueOf(b), String.valueOf(c));
 
         // contact_attribute 打标：A=L1 B=L2 C=L3（tenant 隔离内）
@@ -153,9 +175,9 @@ class M4AgentTests {
 
         // 无通道成员不打任何通道，仅落 layer=L4 标签
         assertThat(layerAttributes(d)).containsExactly("L4");
-        Integer delivered = jdbc.queryForObject(
-                "SELECT count(*) FROM delivery_record WHERE execution_id = ?",
-                Integer.class, Long.parseLong(JsonPath.read(body, "$.data.executionId").toString()));
+        Long delivered = inTenant(() -> deliveryRecordMapper.selectCount(
+                Wrappers.<DeliveryRecord>lambdaQuery().eq(DeliveryRecord::getExecutionId,
+                        Long.parseLong(JsonPath.read(body, "$.data.executionId").toString()))));
         assertThat(delivered).isZero();
     }
 
@@ -181,10 +203,10 @@ class M4AgentTests {
                 .andExpect(jsonPath("$.data.nodes[?(@.key=='sms1')].contacts").value(1));
 
         // 画布成员属性（churn_risk 等）由建联系人写入，dry-run 只不允许追加 layer 标签
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM contact_attribute WHERE key='layer'",
-                Integer.class)).isZero();
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM audit_log", Integer.class)).isZero();
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM delivery_record", Integer.class)).isZero();
+        assertThat(inTenant(() -> contactAttributeMapper.selectCount(
+                Wrappers.<ContactAttribute>lambdaQuery().eq(ContactAttribute::getKey, "layer")))).isZero();
+        assertThat(inTenant(() -> agentAuditMapper.selectCount(null))).isZero();
+        assertThat(inTenant(() -> deliveryRecordMapper.selectCount(null))).isZero();
     }
 
     // ---------- 4. 策略 draft → published → 生效版本 ----------
@@ -228,9 +250,9 @@ class M4AgentTests {
                 .andExpect(jsonPath("$.data.strategyVersion").value("v3"));
 
         // 生成即审计（schema 校验通过）
-        assertThat(jdbc.queryForObject(
-                "SELECT count(*) FROM audit_log WHERE action = 'strategy_generate' AND schema_valid = true",
-                Integer.class)).isEqualTo(2);
+        assertThat(inTenant(() -> agentAuditMapper.selectCount(
+                Wrappers.<AgentAudit>lambdaQuery().eq(AgentAudit::getAction, "strategy_generate")
+                        .eq(AgentAudit::getSchemaValid, true)))).isEqualTo(2L);
     }
 
     // ---------- 5. route_split 审计 ----------
@@ -249,15 +271,15 @@ class M4AgentTests {
                         .content("{\"audienceSnapshotId\":" + snapshot + "}"))
                 .andExpect(status().isOk());
 
-        Integer rows = jdbc.queryForObject(
-                "SELECT count(*) FROM audit_log WHERE agent_type = 'LAYER' AND action = 'route_split'",
-                Integer.class);
-        assertThat(rows).isEqualTo(1);
-        String row = jdbc.queryForObject(
-                "SELECT status || '|' || model || '|' || schema_valid || '|' || strategy_version" +
-                        " FROM audit_log WHERE action = 'route_split'", String.class);
+        Long rows = inTenant(() -> agentAuditMapper.selectCount(
+                Wrappers.<AgentAudit>lambdaQuery().eq(AgentAudit::getAgentType, "LAYER")
+                        .eq(AgentAudit::getAction, "route_split")));
+        assertThat(rows).isEqualTo(1L);
+        AgentAudit routeAudit = inTenant(() -> agentAuditMapper.selectList(
+                Wrappers.<AgentAudit>lambdaQuery().eq(AgentAudit::getAction, "route_split"))).get(0);
         // 未发布策略时引用默认分层版本 'default'，schema 校验通过、deterministic 主路径
-        assertThat(row).isEqualTo("SUCCESS|deterministic|true|default");
+        assertThat(routeAudit.getStatus() + "|" + routeAudit.getModel() + "|" + routeAudit.getSchemaValid()
+                + "|" + routeAudit.getStrategyVersion()).isEqualTo("SUCCESS|deterministic|true|default");
     }
 
     // ---------- 6. 路由预览：近 24h 触达史后置 ----------
@@ -333,9 +355,8 @@ class M4AgentTests {
                 .andExpect(jsonPath("$.data.strategy.dimensions[0]").value("channel_availability"));
 
         // 深层数据已落到层原文档上的 rule 字段
-        String doc = jdbc.queryForObject(
-                "SELECT strategy FROM layer_strategy WHERE id = ?", String.class, id);
-        JsonNode saved = new com.fasterxml.jackson.databind.ObjectMapper().readTree(doc);
+        LayerStrategy layerStrategy = inTenant(() -> layerStrategyMapper.selectById(id));
+        JsonNode saved = new com.fasterxml.jackson.databind.ObjectMapper().readTree(layerStrategy.getStrategy());
         assertThat(saved.path("strategy_version").asText()).isEqualTo("v-edit");
         assertThat(saved.path("layers").path(0).path("rule").path("channel_availability").asText())
                 .isEqualTo("sms_only");
@@ -404,13 +425,14 @@ class M4AgentTests {
         assertThat(layerAttributes(a, b, c)).containsExactly("L3", "L4", "L1");
 
         // 仅 A(C 双通道走 sms1) 与 A(仅短信走 sms3) 实际下发短信；B 落入 end 无下发
-        Integer delivered = jdbc.queryForObject(
-                "SELECT count(*) FROM delivery_record WHERE execution_id = ?", Integer.class, exec);
-        assertThat(delivered).isEqualTo(2);
+        Long delivered = inTenant(() -> deliveryRecordMapper.selectCount(
+                Wrappers.<DeliveryRecord>lambdaQuery().eq(DeliveryRecord::getExecutionId, exec)));
+        assertThat(delivered).isEqualTo(2L);
 
         // 审计引用生效策略版本
-        String audit = jdbc.queryForObject(
-                "SELECT strategy_version FROM audit_log WHERE action = 'route_split'", String.class);
+        String audit = inTenant(() -> agentAuditMapper.selectList(
+                Wrappers.<AgentAudit>lambdaQuery().eq(AgentAudit::getAction, "route_split"))).get(0)
+                .getStrategyVersion();
         assertThat(audit).isEqualTo("v-remap");
     }
 
@@ -433,10 +455,12 @@ class M4AgentTests {
     }
 
     private List<String> layerAttributes(Long... ids) {
-        return jdbc.queryForList(
-                "SELECT btrim(value::text, '\"') FROM contact_attribute WHERE key = 'layer' AND contact_id IN ("
-                        + String.join(",", java.util.Arrays.stream(ids).map(String::valueOf).toList())
-                        + ") ORDER BY contact_id", String.class);
+        // jsonb 字符串读出带引号（如 "L1"），按 btrim 语义去引号
+        return inTenant(() -> contactAttributeMapper.selectList(
+                        Wrappers.<ContactAttribute>lambdaQuery().eq(ContactAttribute::getKey, "layer")
+                                .in(ContactAttribute::getContactId, java.util.Arrays.asList(ids))
+                                .orderByAsc(ContactAttribute::getContactId)))
+                .stream().map(ca -> ca.getValue().replaceAll("^\"|\"$", "")).toList();
     }
 
     private long saveCanvas() throws Exception {
@@ -583,5 +607,24 @@ class M4AgentTests {
 
     private String cond(String field, String op, Object value) {
         return "{\"field\":\"" + field + "\",\"op\":\"" + op + "\",\"value\":" + asJson(value) + "}";
+    }
+
+    /** 在默认租户上下文内执行 mapper 调用（租户插件要求）。 */
+    private <T> T inTenant(Supplier<T> action) {
+        TenantContext.set(new TenantInfo(1L));
+        try {
+            return action.get();
+        } finally {
+            TenantContext.clear();
+        }
+    }
+
+    private void inTenant(Runnable action) {
+        TenantContext.set(new TenantInfo(1L));
+        try {
+            action.run();
+        } finally {
+            TenantContext.clear();
+        }
     }
 }

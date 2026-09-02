@@ -22,7 +22,7 @@ public interface WorkflowMapper extends BaseMapper<Workflow> {
     @InterceptorIgnore(tenantLine = "true")
     @Update("TRUNCATE delivery_record, template, execution_node_state, execution, workflow_edge, " +
             "workflow_node, workflow, contact_tag, contact_attribute, contact, " +
-            "audience_snapshot_member, audience_snapshot, audience, audit_log, event " +
+            "audience_snapshot_member, audience_snapshot, audience, audit_log, layer_strategy, event " +
             "RESTART IDENTITY CASCADE")
     void testTruncateAll();
 

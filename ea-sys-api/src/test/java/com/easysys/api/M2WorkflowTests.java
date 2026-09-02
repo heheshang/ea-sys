@@ -1,5 +1,10 @@
 package com.easysys.api;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.easysys.common.tenant.TenantContext;
+import com.easysys.common.tenant.TenantInfo;
+import com.easysys.engine.entity.Workflow;
+import com.easysys.engine.mapper.WorkflowMapper;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -8,7 +13,6 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.http.MediaType;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -19,6 +23,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -47,7 +52,7 @@ class M2WorkflowTests {
     MockMvc mvc;
 
     @Autowired
-    JdbcTemplate jdbc;
+    WorkflowMapper workflowMapper;
 
     private static final String AUTH = "Authorization";
 
@@ -55,9 +60,7 @@ class M2WorkflowTests {
 
     @BeforeEach
     void login() throws Exception {
-        jdbc.update("TRUNCATE execution_node_state, execution, workflow_edge, workflow_node, workflow, " +
-                "contact_tag, contact_attribute, contact, audience_snapshot_member, " +
-                "audience_snapshot, audience RESTART IDENTITY CASCADE");
+        inTenant(workflowMapper::testTruncateAll);
         String body = mvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"username\":\"admin\",\"password\":\"admin123\"}"))
@@ -185,13 +188,13 @@ class M2WorkflowTests {
                 .andExpect(jsonPath("$.data.version").value(2))
                 .andExpect(jsonPath("$.data.status").value("published"));
 
-        Long archivedVersion = jdbc.queryForObject(
-                "SELECT version FROM workflow WHERE ref_id = ? AND status = 'archived'", Long.class, wf);
-        assertThat(archivedVersion).isEqualTo(1L);
+        Workflow archived = inTenant(() -> workflowMapper.selectOne(
+                Wrappers.<Workflow>lambdaQuery().eq(Workflow::getRefId, wf).eq(Workflow::getStatus, "archived")));
+        assertThat(archived.getVersion()).isEqualTo(1);
 
-        Long publishedVersion = jdbc.queryForObject(
-                "SELECT version FROM workflow WHERE ref_id = ? AND status = 'published'", Long.class, wf);
-        assertThat(publishedVersion).isEqualTo(2L);
+        Workflow published = inTenant(() -> workflowMapper.selectOne(
+                Wrappers.<Workflow>lambdaQuery().eq(Workflow::getRefId, wf).eq(Workflow::getStatus, "published")));
+        assertThat(published.getVersion()).isEqualTo(2);
     }
 
     // ---------- 失败路径 ----------
@@ -391,5 +394,24 @@ class M2WorkflowTests {
 
     private String condNoValue(String field, String op) {
         return "{\"field\":\"" + field + "\",\"op\":\"" + op + "\"}";
+    }
+
+    /** 在默认租户上下文内执行 mapper 调用（租户插件要求）。 */
+    private <T> T inTenant(Supplier<T> action) {
+        TenantContext.set(new TenantInfo(1L));
+        try {
+            return action.get();
+        } finally {
+            TenantContext.clear();
+        }
+    }
+
+    private void inTenant(Runnable action) {
+        TenantContext.set(new TenantInfo(1L));
+        try {
+            action.run();
+        } finally {
+            TenantContext.clear();
+        }
     }
 }

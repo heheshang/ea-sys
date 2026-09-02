@@ -2,7 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { Contact, ContactRequest } from '../api/types'
-import { createContact, deleteContact, listContacts, updateContact } from '../api/contact'
+import { batchCreateContacts, createContact, deleteContact, listContacts, updateContact } from '../api/contact'
 
 const loading = ref(false)
 const rows = ref<Contact[]>([])
@@ -122,6 +122,37 @@ function fmtAttrs(attrs: Record<string, unknown>) {
   if (!entries.length) return '—'
   return entries.map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ')
 }
+
+/* ---------- 批量添加 ---------- */
+const batchDialogVisible = ref(false)
+const batchCount = ref(1000)
+const batchSaving = ref(false)
+
+function openBatch() {
+  batchCount.value = 1000
+  batchDialogVisible.value = true
+}
+
+async function saveBatch() {
+  const n = Number(batchCount.value)
+  if (!Number.isInteger(n) || n < 1 || n > 5000) {
+    ElMessage.warning('数量需为 1–5000 的整数')
+    return
+  }
+  batchSaving.value = true
+  try {
+    const res = await batchCreateContacts({ count: n })
+    ElMessage.success(`批量添加完成：成功 ${res.created} 个${res.skipped ? `，跳过 ${res.skipped} 个` : ''}`)
+    batchDialogVisible.value = false
+    page.value = 1
+    await load()
+  } catch (e) {
+    ElMessage.error('批量添加失败，请稍后重试')
+    throw e
+  } finally {
+    batchSaving.value = false
+  }
+}
 </script>
 
 <template>
@@ -138,6 +169,7 @@ function fmtAttrs(attrs: Record<string, unknown>) {
         />
         <el-button type="primary" @click="onSearch">搜索</el-button>
         <div class="spacer" />
+        <el-button @click="openBatch">批量添加</el-button>
         <el-button type="primary" @click="openCreate">新建联系人</el-button>
       </div>
 
@@ -181,6 +213,21 @@ function fmtAttrs(attrs: Record<string, unknown>) {
         @size-change="page = 1; load()"
       />
     </el-card>
+
+    <el-dialog v-model="batchDialogVisible" title="批量添加联系人" width="480px" :close-on-click-modal="false">
+      <el-form label-width="80px">
+        <el-form-item label="数量">
+          <el-input-number v-model="batchCount" :min="1" :max="5000" :step="100" style="width: 200px" />
+        </el-form-item>
+        <p class="batch-tip">
+          随机生成 externalId 与手机号，并随机画像属性（churn_risk、level），可直接用于人群圈选与触达验证。单次上限 5000。
+        </p>
+      </el-form>
+      <template #footer>
+        <el-button @click="batchDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="batchSaving" @click="saveBatch">生成</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog
       v-model="dialogVisible"
@@ -259,5 +306,11 @@ function fmtAttrs(attrs: Record<string, unknown>) {
 .mono :deep(textarea) {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
+}
+.batch-tip {
+  margin: 0;
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.6;
 }
 </style>

@@ -175,6 +175,17 @@ export interface DryRunRequest {
   audienceSnapshotId: number
 }
 
+/** 批量随机创建联系人请求（POST /api/contacts/batch）。 */
+export interface BatchContactCreateRequest {
+  count: number
+}
+
+/** 批量创建结果。 */
+export interface BatchContactCreateResult {
+  created: number
+  skipped: number
+}
+
 /** 单节点执行结果（DryRunResponse.NodeOutcome）。 */
 export interface NodeOutcome {
   key: string

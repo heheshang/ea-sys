@@ -23,6 +23,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -112,6 +113,38 @@ class M1AudienceTests {
         mvc.perform(get("/api/contacts/{id}", id).header(AUTH, bearer()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value(40400));
+    }
+
+    @Test
+    void batchCreateRandomContacts() throws Exception {
+        // 批量随机创建：全数成功、不重复、画像属性可圈选
+        mvc.perform(post("/api/contacts/batch").header(AUTH, bearer())
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"count\":10}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.created").value(10))
+                .andExpect(jsonPath("$.data.skipped").value(0));
+
+        String body = mvc.perform(get("/api/contacts?size=200").header(AUTH, bearer()))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        List<Map<String, Object>> records = JsonPath.read(body, "$.data.records");
+        List<String> phones = records.stream()
+                .map(r -> (String) r.get("phone")).filter(Objects::nonNull).toList();
+        assertThat(phones).hasSize(10);
+        assertThat(new java.util.HashSet<>(phones)).hasSize(10); // 手机号不重复
+        Map<String, Object> sample = records.get(0);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> attrs = (Map<String, Object>) sample.get("attributes");
+        assertThat(attrs).containsKeys("churn_risk", "level");
+        assertThat(((String) sample.get("externalId"))).startsWith("rand-");
+
+        // 数量校验：0 与超上限拒绝
+        mvc.perform(post("/api/contacts/batch").header(AUTH, bearer())
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"count\":0}"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/contacts/batch").header(AUTH, bearer())
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"count\":5001}"))
+                .andExpect(status().isBadRequest());
     }
 
     @Test

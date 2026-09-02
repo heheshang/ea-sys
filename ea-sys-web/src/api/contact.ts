@@ -1,5 +1,5 @@
 import { http } from './http'
-import type { ApiResponse, Contact, ContactRequest, PageResponse } from './types'
+import type { ApiResponse, BatchContactCreateRequest, BatchContactCreateResult, Contact, ContactRequest, PageResponse } from './types'
 
 /** GET /api/contacts?keyword=&page=&size= */
 export async function listContacts(params: { keyword?: string; page?: number; size?: number }): Promise<PageResponse<Contact>> {
@@ -10,6 +10,12 @@ export async function listContacts(params: { keyword?: string; page?: number; si
 /** POST /api/contacts */
 export async function createContact(req: ContactRequest): Promise<Contact> {
   const { data } = await http.post<ApiResponse<Contact>>('/contacts', req)
+  return data.data
+}
+
+/** POST /api/contacts/batch —— 批量随机创建联系人（测试/压测种子）。 */
+export async function batchCreateContacts(req: BatchContactCreateRequest): Promise<BatchContactCreateResult> {
+  const { data } = await http.post<ApiResponse<BatchContactCreateResult>>('/contacts/batch', req)
   return data.data
 }
 

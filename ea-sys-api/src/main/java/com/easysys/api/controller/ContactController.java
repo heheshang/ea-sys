@@ -1,5 +1,7 @@
 package com.easysys.api.controller;
 
+import com.easysys.api.dto.audience.BatchContactCreateRequest;
+import com.easysys.api.dto.audience.BatchContactCreateResult;
 import com.easysys.api.dto.audience.ContactRequest;
 import com.easysys.api.dto.audience.ContactResponse;
 import com.easysys.api.service.ContactService;
@@ -29,6 +31,12 @@ public class ContactController {
     @PostMapping
     public ApiResponse<ContactResponse> create(@Valid @RequestBody ContactRequest req) {
         return ApiResponse.ok(contactService.create(req));
+    }
+
+    /** 批量随机创建联系人（测试/压测种子），单次上限 5000。 */
+    @PostMapping("/batch")
+    public ApiResponse<BatchContactCreateResult> batch(@Valid @RequestBody BatchContactCreateRequest req) {
+        return ApiResponse.ok(contactService.batchCreate(req));
     }
 
     @GetMapping

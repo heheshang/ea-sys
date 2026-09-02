@@ -3,6 +3,8 @@ package com.easysys.api.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.easysys.api.dto.audience.BatchContactCreateRequest;
+import com.easysys.api.dto.audience.BatchContactCreateResult;
 import com.easysys.api.dto.audience.ContactRequest;
 import com.easysys.api.dto.audience.ContactResponse;
 import com.easysys.api.entity.Contact;
@@ -23,8 +25,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -63,6 +67,90 @@ public class ContactService {
         }
         replaceProfile(c.getId(), req);
         return loadResponse(c.getId());
+    }
+
+    /** 单次最多尝试生成数（极端碰撞保护）。 */
+    private static final int BATCH_MAX_ATTEMPTS = 50_000;
+
+    private static final String[] CHURN_RISKS = { "LOW", "MEDIUM", "HIGH" };
+
+    /**
+     * 批量随机创建联系人：externalId/手机号随机唯一，画像属性随机（churn_risk、level），
+     * 供圈选与触达验证。真实下发的联系人同样落在 contact 表，圈选快照即可纳入人群。
+     */
+    @Transactional
+    public BatchContactCreateResult batchCreate(BatchContactCreateRequest req) {
+        Long tenantId = TenantContext.require();
+        SecureRandom rnd = new SecureRandom();
+        Instant now = Instant.now();
+        Set<String> phones = new HashSet<>();
+        Set<String> extIds = new HashSet<>();
+        int created = 0;
+        int attempts = 0;
+        while (created < req.count() && attempts < BATCH_MAX_ATTEMPTS) {
+            attempts++;
+            String phone = randomPhone(rnd);
+            String ext = "rand-" + randomToken(rnd, 8);
+            if (!phones.add(phone) || !extIds.add(ext)) {
+                continue;
+            }
+            Contact c = new Contact();
+            c.setTenantId(tenantId);
+            c.setExternalId(ext);
+            c.setPhone(phone);
+            c.setStatus("active");
+            c.setSuppression("{}");
+            c.setCreatedAt(now);
+            c.setUpdatedAt(now);
+            try {
+                contactMapper.insert(c);
+            } catch (DuplicateKeyException e) {
+                // 撞库存号码/externalId（随机碰撞，概率极低）→ 放弃该组随机值重试
+                phones.remove(phone);
+                extIds.remove(ext);
+                continue;
+            }
+            insertRandomProfile(c.getId(), tenantId, now, rnd);
+            created++;
+        }
+        return new BatchContactCreateResult(created, req.count() - created);
+    }
+
+    /** 随机画像属性（2 条）：churn_risk 命中流失人群规则，level 命中 VIP 人群规则。 */
+    private void insertRandomProfile(Long contactId, Long tenantId, Instant now, SecureRandom rnd) {
+        List<ContactAttribute> attrs = new ArrayList<>(2);
+        attrs.add(attr(contactId, tenantId, now, "churn_risk", CHURN_RISKS[rnd.nextInt(CHURN_RISKS.length)]));
+        attrs.add(attr(contactId, tenantId, now, "level", 1 + rnd.nextInt(5)));
+        attrs.forEach(attributeMapper::insert);
+    }
+
+    private ContactAttribute attr(Long contactId, Long tenantId, Instant now, String key, Object value) {
+        ContactAttribute a = new ContactAttribute();
+        a.setTenantId(tenantId);
+        a.setContactId(contactId);
+        a.setKey(key);
+        a.setValue(writeJson(value));
+        a.setUpdatedAt(now);
+        return a;
+    }
+
+    /** 11 位大陆手机号（1[3-9] + 9 位随机）。 */
+    private static String randomPhone(SecureRandom rnd) {
+        StringBuilder sb = new StringBuilder("1");
+        sb.append(3 + rnd.nextInt(7));
+        for (int i = 0; i < 9; i++) {
+            sb.append(rnd.nextInt(10));
+        }
+        return sb.toString();
+    }
+
+    private static String randomToken(SecureRandom rnd, int len) {
+        String chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+        StringBuilder sb = new StringBuilder(len);
+        for (int i = 0; i < len; i++) {
+            sb.append(chars.charAt(rnd.nextInt(chars.length())));
+        }
+        return sb.toString();
     }
 
     @Transactional

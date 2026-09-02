@@ -28,12 +28,12 @@ public class EventService {
 
     private final EventMapper eventMapper;
     private final ObjectMapper json;
-    private final TriggerService triggerService;
+    private final EventQueueService eventQueue;
 
-    public EventService(EventMapper eventMapper, ObjectMapper json, TriggerService triggerService) {
+    public EventService(EventMapper eventMapper, ObjectMapper json, EventQueueService eventQueue) {
         this.eventMapper = eventMapper;
         this.json = json;
-        this.triggerService = triggerService;
+        this.eventQueue = eventQueue;
     }
 
     /** 批量导入，返回 [imported, duplicates]；新导入事件触发匹配的 EVENT 工作流。 */
@@ -70,14 +70,15 @@ public class EventService {
             }
             idx = end;
         }
-        // 事件触发：单用户入流（载荷置于 event 映射）。触发失败仅告警，导入结果不受影响。
+        // 事件触发：异步入流（Redis Streams），消费端匹配 EVENT 流程执行。
+        // 入流失败仅告警丢弃（同原同步语义「触发失败不影响导入结果」）。
         for (EventImportRequest.EventItem item : newEvents) {
             try {
                 Map<String, Object> payload = item.payload() instanceof Map
                         ? (Map<String, Object>) item.payload() : null;
-                triggerService.fireEvent(item.contactId(), item.eventName(), payload);
+                eventQueue.enqueue(tenantId, item.contactId(), item.eventName(), payload);
             } catch (Exception ex) {
-                log.warn("事件触发失败 contactId={} event={}", item.contactId(), item.eventName(), ex);
+                log.warn("事件入流失败 contactId={} event={}", item.contactId(), item.eventName(), ex);
             }
         }
         return Map.of("imported", imported, "duplicates", duplicates);

@@ -5,6 +5,8 @@ import com.easysys.api.entity.AudienceSnapshot;
 import com.easysys.api.entity.AudienceSnapshotMember;
 import com.easysys.api.mapper.AudienceSnapshotMapper;
 import com.easysys.api.mapper.AudienceSnapshotMemberMapper;
+import com.easysys.api.service.EventQueueConsumer;
+import com.easysys.api.service.EventQueueService;
 import com.easysys.api.service.TriggerService;
 import com.easysys.common.tenant.TenantContext;
 import com.easysys.common.tenant.TenantInfo;
@@ -16,7 +18,9 @@ import com.easysys.engine.mapper.WorkflowMapper;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.redisson.api.RStream;
 import org.redisson.api.RedissonClient;
+import org.redisson.api.StreamMessageId;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -67,6 +71,8 @@ class M6TriggerTests {
     static void redisProps(DynamicPropertyRegistry registry) {
         registry.add("spring.data.redis.host", redis::getHost);
         registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
+        // 事件队列消费由测试显式驱动 pollOnce()，禁掉 @Scheduled 避免与断言竞态
+        registry.add("easysys.trigger.event.enabled", () -> "false");
     }
 
     @Autowired
@@ -77,6 +83,9 @@ class M6TriggerTests {
 
     @Autowired
     TriggerService triggerService;
+
+    @Autowired
+    EventQueueConsumer eventQueueConsumer;
 
     @Autowired
     WorkflowMapper workflowMapper;
@@ -148,12 +157,41 @@ class M6TriggerTests {
         long wf = saveCanvas(Map.of("triggerType", "EVENT", "eventName", "order_paid", "eventFilter", filter), template);
         publish(wf);
 
-        // 未命中：amount=50 → 不执行
+        // 未命中：amount=50 → 入流消费后仍不执行
         importEvent(contact, "order_paid", "2026-09-02T01:00:00Z", Map.of("amount", 50)).andExpect(status().isOk());
+        eventQueueConsumer.pollOnce();
         assertThat(executionsOf(wf)).isEmpty();
 
-        // 命中：amount=200 → 单用户执行
+        // 命中：amount=200 → 入流后 HTTP 已返回但尚未执行（异步解耦）→ 消费后单用户执行
         importEvent(contact, "order_paid", "2026-09-02T01:05:00Z", Map.of("amount", 200)).andExpect(status().isOk());
+        assertThat(executionsOf(wf)).isEmpty();
+
+        eventQueueConsumer.pollOnce();
+        List<Execution> executions = executionsOf(wf);
+        assertThat(executions).hasSize(1);
+        assertThat(executions.get(0).getTriggerType()).isEqualTo("EVENT");
+    }
+
+    /**
+     * 队列投递可靠性：命中事件入流后 stream 有 1 条消息（未消费不执行）；
+     * pollOnce 消费成功 XACK（stream 清空）+ 落 execution。
+     */
+    @Test
+    void eventMessagesConsumedAndAcked() throws Exception {
+        long contact = createContact(contact("ack-user", "13600000033", null, highRisk("队列")));
+        long template = createTemplate("sms", "短信关怀", "Hi ${name!}");
+        long wf = saveCanvas(Map.of("triggerType", "EVENT", "eventName", "order_paid"), template);
+        publish(wf);
+
+        importEvent(contact, "order_paid", "2026-08-01T00:00:00Z", Map.of());
+        RStream<String, String> stream = redisson.getStream(EventQueueService.STREAM);
+        assertThat(stream.size()).isEqualTo(1L);
+        assertThat(executionsOf(wf)).isEmpty();
+
+        eventQueueConsumer.pollOnce();
+        // 消费成功 XACK：组 pending 清空（XLEN 只增不减，用 PEL 判消费完成）
+        assertThat(stream.listPending(EventQueueConsumer.GROUP,
+                StreamMessageId.MIN, StreamMessageId.MAX, 100)).isEmpty();
         List<Execution> executions = executionsOf(wf);
         assertThat(executions).hasSize(1);
         assertThat(executions.get(0).getTriggerType()).isEqualTo("EVENT");

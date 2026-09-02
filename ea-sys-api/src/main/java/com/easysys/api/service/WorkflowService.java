@@ -3,6 +3,7 @@ package com.easysys.api.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.easysys.api.dto.workflow.DryRunRequest;
 import com.easysys.api.dto.workflow.DryRunResponse;
+import com.easysys.api.dto.workflow.ExecutionSummaryView;
 import com.easysys.api.dto.workflow.SaveWorkflowRequest;
 import com.easysys.api.dto.workflow.ValidationResponse;
 import com.easysys.api.dto.workflow.WorkflowEdgeSpec;
@@ -350,6 +351,55 @@ public class WorkflowService {
             throw new BizException(ErrorCode.NOT_FOUND, "执行不存在: " + executionId);
         }
         return DryRunResponse.from(dryRunExecutor.report(executionId));
+    }
+
+    /** 执行历史：干跑/真实执行记录列表（按 executionId 倒序；workflowId/dryRun 可选筛选）。 */
+    public List<ExecutionSummaryView> executions(Long workflowId, Boolean dryRun, Integer limit) {
+        Long tenantId = TenantContext.require();
+        LambdaQueryWrapper<Execution> qw = new LambdaQueryWrapper<Execution>()
+                .eq(Execution::getTenantId, tenantId)
+                .eq(workflowId != null, Execution::getWorkflowId, workflowId)
+                .eq(dryRun != null, Execution::getDryRun, dryRun)
+                .orderByDesc(Execution::getId)
+                .last(limit != null && limit > 0 ? "LIMIT " + limit : "LIMIT 100");
+        List<Execution> rows = executionMapper.selectList(qw);
+
+        // 工作流名（ref_id → name，任一版本行即可）与人群快照信息
+        Map<Long, String> wfNames = new HashMap<>();
+        for (Workflow w : workflowMapper.selectList(new LambdaQueryWrapper<Workflow>()
+                .eq(Workflow::getTenantId, tenantId))) {
+            wfNames.putIfAbsent(w.getRefId(), w.getName());
+        }
+        Map<Long, AudienceSnapshot> snaps = new HashMap<>();
+        for (Execution r : rows) {
+            if (r.getAudienceSnapshotId() != null && !snaps.containsKey(r.getAudienceSnapshotId())) {
+                AudienceSnapshot s = snapshotMapper.selectById(r.getAudienceSnapshotId());
+                if (s != null) {
+                    snaps.put(r.getAudienceSnapshotId(), s);
+                }
+            }
+        }
+        Map<Long, String> audNames = new HashMap<>();
+        for (AudienceSnapshot s : snaps.values()) {
+            if (s.getAudienceId() != null && !audNames.containsKey(s.getAudienceId())) {
+                Audience a = audienceMapper.selectById(s.getAudienceId());
+                audNames.put(s.getAudienceId(), a == null ? null : a.getName());
+            }
+        }
+
+        List<ExecutionSummaryView> out = new ArrayList<>(rows.size());
+        for (Execution r : rows) {
+            AudienceSnapshot s = r.getAudienceSnapshotId() == null ? null : snaps.get(r.getAudienceSnapshotId());
+            Long audId = s == null ? null : s.getAudienceId();
+            out.add(new ExecutionSummaryView(r.getId(), r.getWorkflowId(),
+                    wfNames.getOrDefault(r.getWorkflowId(), "工作流#" + r.getWorkflowId()),
+                    r.getWorkflowVersion(), r.getTriggerType(), r.getDryRun(), r.getStatus(),
+                    r.getAudienceSnapshotId(),
+                    audId == null ? null : audNames.get(audId),
+                    s == null ? null : s.getMemberCount(),
+                    r.getStartedAt(), r.getFinishedAt()));
+        }
+        return out;
     }
 
     public WorkflowView get(Long id) {

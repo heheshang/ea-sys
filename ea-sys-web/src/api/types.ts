@@ -146,6 +146,22 @@ export interface NodeOutcome {
   output: Record<string, unknown> | null
 }
 
+/** 执行历史行（GET /api/workflows/executions）。 */
+export interface ExecutionSummary {
+  executionId: number
+  workflowId: number
+  workflowName: string
+  workflowVersion: number
+  triggerType: string
+  dryRun: boolean
+  status: string
+  audienceSnapshotId: number | null
+  audienceName: string | null
+  memberCount: number | null
+  startedAt: string
+  finishedAt: string | null
+}
+
 /** 执行/干跑报告（DryRunResponse）。 */
 export interface DryRunResponse {
   executionId: number

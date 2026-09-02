@@ -3,6 +3,7 @@ import type {
   ApiResponse,
   DryRunRequest,
   DryRunResponse,
+  ExecutionSummary,
   SaveWorkflowRequest,
   ValidationResponse,
   WorkflowSnapshotList,
@@ -74,5 +75,15 @@ export async function executeWorkflow(id: number, req: DryRunRequest): Promise<D
 /** GET /api/workflows/executions/{executionId}/report —— 按执行实例查询报告。 */
 export async function getExecutionReport(executionId: number): Promise<DryRunResponse> {
   const { data } = await http.get<ApiResponse<DryRunResponse>>(`/workflows/executions/${executionId}/report`)
+  return data.data
+}
+
+/** GET /api/workflows/executions —— 执行历史列表（dryRun=true 干跑 / false 真实触达）。 */
+export async function listWorkflowExecutions(opts?: {
+  workflowId?: number
+  dryRun?: boolean
+  limit?: number
+}): Promise<ExecutionSummary[]> {
+  const { data } = await http.get<ApiResponse<ExecutionSummary[]>>('/workflows/executions', { params: opts })
   return data.data
 }

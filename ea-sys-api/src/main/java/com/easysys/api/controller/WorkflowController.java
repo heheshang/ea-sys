@@ -2,6 +2,7 @@ package com.easysys.api.controller;
 
 import com.easysys.api.dto.workflow.DryRunRequest;
 import com.easysys.api.dto.workflow.DryRunResponse;
+import com.easysys.api.dto.workflow.ExecutionSummaryView;
 import com.easysys.api.dto.workflow.SaveWorkflowRequest;
 import com.easysys.api.dto.workflow.ValidationResponse;
 import com.easysys.api.dto.workflow.WorkflowSnapshotListView;
@@ -19,6 +20,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -103,5 +105,14 @@ public class WorkflowController {
     @GetMapping("/executions/{executionId}/report")
     public ApiResponse<DryRunResponse> report(@PathVariable Long executionId) {
         return ApiResponse.ok(workflowService.report(executionId));
+    }
+
+    /** 执行历史：干跑/真实执行记录列表（workflowId/dryRun 可选筛选，dryRun=true 干跑）。 */
+    @GetMapping("/executions")
+    public ApiResponse<List<ExecutionSummaryView>> executions(
+            @RequestParam(required = false) Long workflowId,
+            @RequestParam(required = false) Boolean dryRun,
+            @RequestParam(required = false) Integer limit) {
+        return ApiResponse.ok(workflowService.executions(workflowId, dryRun, limit));
     }
 }

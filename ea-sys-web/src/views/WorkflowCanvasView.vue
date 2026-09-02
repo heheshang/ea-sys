@@ -15,7 +15,7 @@ import type { Connection, Edge, Node } from '@vue-flow/core'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
 import dagre from '@dagrejs/dagre'
-import CanvasNode, { nodeWidthOf } from '../components/canvas/CanvasNode.vue'
+import CanvasNode, { nodeHeightOf, nodeWidthOfNode } from '../components/canvas/CanvasNode.vue'
 import EdgeConditionEditor from '../components/canvas/EdgeConditionEditor.vue'
 import {
   aiChat,
@@ -301,6 +301,11 @@ function nodeLabel(n: LiteNode): string {
   return realOf(n).name?.trim() || PALETTE.find((p) => p.type === nodeTypeOf(n))?.label || nodeTypeOf(n)
 }
 
+/** position 有效性：x/y 必须是有限数字（后端快照可能存 {} 或 null，视为未定位）。 */
+function isFinitePosition(p: { x?: number; y?: number } | null | undefined): boolean {
+  return p != null && Number.isFinite(p.x) && Number.isFinite(p.y)
+}
+
 /** 条件分支模型：condition=null 为 else 兜底 */
 const edgeMode = computed<'else' | 'if'>(() => (condOf(selectedEdge.value) ? 'if' : 'else'))
 
@@ -381,7 +386,7 @@ async function load() {
     wf.nodes.map((spec): LiteNode => ({
       id: spec.key,
       type: 'canvas',
-      position: spec.position && !Number.isNaN(spec.position.x) ? spec.position : { x: 120, y: 80 },
+      position: isFinitePosition(spec.position) ? spec.position! : { x: 120, y: 80 },
       data: { real: { ...spec, position: null } },
     })),
   )
@@ -782,7 +787,7 @@ function applyAiDraft() {
     draft.nodes.map((spec): LiteNode => ({
       id: spec.key,
       type: 'canvas',
-      position: spec.position && !Number.isNaN(spec.position.x) ? spec.position : { x: 120, y: 80 },
+      position: isFinitePosition(spec.position) ? spec.position! : { x: 120, y: 80 },
       data: { real: { ...spec, position: null } },
     })),
   )
@@ -830,22 +835,32 @@ watch(
 
 /* ---------- 自动布局 ---------- */
 
+/** 布局宽度/高度：与 CanvasNode 渲染尺寸同源（摘要行撑宽、行数撑高），dagre 结果不会与渲染脱节。 */
+function layoutWidthOf(n: LiteNode): number {
+  const targetName = (k: string): string => {
+    const t = allNodes().find((x) => x.id === k)
+    return t ? nodeLabel(t) : k
+  }
+  const t = realOf(n).type
+  const withSummary = t === 'CONDITION' || t === 'AGENT_SPLIT'
+  return nodeWidthOfNode(realOf(n).key, allEdges(), targetName, nodeLabel(n), withSummary)
+}
+
 function autoLayout() {
   const g = new dagre.graphlib.Graph()
   g.setDefaultEdgeLabel(() => ({}))
   g.setGraph({ rankdir: 'LR', nodesep: 60, ranksep: 110 })
-  const H = 68
   allNodes().forEach((n) => {
-    const w = nodeWidthOf(nodeLabel(n))
-    g.setNode(n.id, { width: w, height: H })
+    g.setNode(n.id, { width: layoutWidthOf(n), height: nodeHeightOf(realOf(n).key, allEdges()) })
   })
   allEdges().forEach((e) => g.setEdge(e.source, e.target))
   dagre.layout(g)
   setNodes(
     allNodes().map((n) => {
-      const w = nodeWidthOf(nodeLabel(n))
+      const w = layoutWidthOf(n)
+      const h = nodeHeightOf(realOf(n).key, allEdges())
       const p = g.node(n.id)
-      return { ...n, position: { x: p.x - w / 2, y: p.y - H / 2 } }
+      return { ...n, position: { x: p.x - w / 2, y: p.y - h / 2 } }
     }),
   )
   clearSelection()

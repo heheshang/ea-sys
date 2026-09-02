@@ -28,6 +28,9 @@ http.interceptors.response.use(
         localStorage.removeItem(TENANT_KEY)
         location.href = '/login'
       }
+    } else if (error.response?.data?.message) {
+      // 后端业务错误（如「模板未填写：…」）透传 message，替代 axios 通用「Request failed with status code 400」。
+      error.message = error.response.data.message
     }
     return Promise.reject(error)
   },

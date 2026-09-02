@@ -7,13 +7,18 @@ import com.easysys.api.dto.workflow.SaveWorkflowRequest;
 import com.easysys.api.dto.workflow.ValidationResponse;
 import com.easysys.api.dto.workflow.WorkflowEdgeSpec;
 import com.easysys.api.dto.workflow.WorkflowNodeSpec;
+import com.easysys.api.dto.workflow.WorkflowDryRunView;
+import com.easysys.api.dto.workflow.WorkflowSnapshotListView;
 import com.easysys.api.dto.workflow.WorkflowSummaryView;
+import com.easysys.api.dto.workflow.WorkflowVersionView;
 import com.easysys.api.dto.workflow.WorkflowView;
+import com.easysys.api.entity.Audience;
 import com.easysys.api.entity.AudienceSnapshot;
 import com.easysys.api.entity.AudienceSnapshotMember;
 import com.easysys.api.entity.Contact;
 import com.easysys.api.entity.ContactAttribute;
 import com.easysys.api.entity.ContactTag;
+import com.easysys.api.mapper.AudienceMapper;
 import com.easysys.api.mapper.AudienceSnapshotMapper;
 import com.easysys.api.mapper.AudienceSnapshotMemberMapper;
 import com.easysys.api.mapper.ContactAttributeMapper;
@@ -69,6 +74,7 @@ public class WorkflowService {
     private final ConditionCompiler conditionCompiler;
     private final DryRunExecutor dryRunExecutor;
     private final WorkflowExecutor workflowExecutor;
+    private final AudienceMapper audienceMapper;
     private final AudienceSnapshotMapper snapshotMapper;
     private final AudienceSnapshotMemberMapper memberMapper;
     private final ContactMapper contactMapper;
@@ -80,6 +86,7 @@ public class WorkflowService {
                            WorkflowEdgeMapper edgeMapper, ExecutionMapper executionMapper,
                            DagValidator dagValidator, ConditionCompiler conditionCompiler,
                            DryRunExecutor dryRunExecutor, WorkflowExecutor workflowExecutor,
+                           AudienceMapper audienceMapper,
                            AudienceSnapshotMapper snapshotMapper,
                            AudienceSnapshotMemberMapper memberMapper, ContactMapper contactMapper,
                            ContactAttributeMapper attributeMapper, ContactTagMapper tagMapper,
@@ -92,6 +99,7 @@ public class WorkflowService {
         this.conditionCompiler = conditionCompiler;
         this.dryRunExecutor = dryRunExecutor;
         this.workflowExecutor = workflowExecutor;
+        this.audienceMapper = audienceMapper;
         this.snapshotMapper = snapshotMapper;
         this.memberMapper = memberMapper;
         this.contactMapper = contactMapper;
@@ -201,9 +209,52 @@ public class WorkflowService {
         return ValidationResponse.of(validateRows(wf));
     }
 
+    /** 发布记录：某业务 id 全部版本行（含发布人/发布时间，published/archived 有值）。 */
+    public List<WorkflowVersionView> versions(Long id) {
+        requireWorkflow(id); // 404（id 不存在）
+        List<Workflow> rows = workflowMapper.selectList(
+                new LambdaQueryWrapper<Workflow>()
+                        .eq(Workflow::getRefId, id)
+                        .orderByDesc(Workflow::getVersion));
+        return rows.stream()
+                .map(w -> new WorkflowVersionView(w.getVersion(), w.getRefId(), w.getName(), w.getStatus(),
+                        w.getPublishedBy(), w.getPublishedAt(), w.getCreatedBy(), w.getCreatedAt()))
+                .toList();
+    }
+
+    /** 快照列表：发布快照（版本行）+ 干跑快照（execution dry_run=true，附人群快照名/成员数）。 */
+    public WorkflowSnapshotListView snapshots(Long id) {
+        requireWorkflow(id); // 404（id 不存在）
+        Long tenantId = TenantContext.require();
+        List<Execution> dryRuns = executionMapper.selectList(
+                new LambdaQueryWrapper<Execution>()
+                        .eq(Execution::getTenantId, tenantId)
+                        .eq(Execution::getWorkflowId, id)
+                        .eq(Execution::getDryRun, true)
+                        .orderByDesc(Execution::getId));
+        List<WorkflowDryRunView> dryRunViews = new ArrayList<>(dryRuns.size());
+        for (Execution e : dryRuns) {
+            String audienceName = null;
+            if (e.getAudienceSnapshotId() != null) {
+                AudienceSnapshot snap = snapshotMapper.selectById(e.getAudienceSnapshotId());
+                if (snap != null) {
+                    Audience aud = audienceMapper.selectById(snap.getAudienceId());
+                    audienceName = aud == null ? null : aud.getName();
+                    dryRunViews.add(new WorkflowDryRunView(e.getId(), e.getWorkflowVersion(),
+                            e.getAudienceSnapshotId(), audienceName, snap.getMemberCount(),
+                            e.getStatus(), e.getStartedAt(), e.getFinishedAt()));
+                    continue;
+                }
+            }
+            dryRunViews.add(new WorkflowDryRunView(e.getId(), e.getWorkflowVersion(),
+                    e.getAudienceSnapshotId(), audienceName, null, e.getStatus(), e.getStartedAt(), e.getFinishedAt()));
+        }
+        return new WorkflowSnapshotListView(versions(id), dryRunViews);
+    }
+
     /** 发布：DRAFT → published；旧发布行 archived。发布前重校验当前行。 */
     @Transactional
-    public WorkflowView publish(Long id) {
+    public WorkflowView publish(Long id, String operator) {
         Workflow wf = draftRow(id);
         if (wf == null) {
             if (editableRow(id) == null) {
@@ -226,6 +277,7 @@ public class WorkflowService {
             workflowMapper.updateById(old);
         }
         wf.setStatus("published");
+        wf.setPublishedBy(operator);
         wf.setPublishedAt(Instant.now());
         wf.setUpdatedAt(Instant.now());
         workflowMapper.updateById(wf);

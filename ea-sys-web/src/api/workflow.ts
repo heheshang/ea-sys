@@ -5,7 +5,9 @@ import type {
   DryRunResponse,
   SaveWorkflowRequest,
   ValidationResponse,
+  WorkflowSnapshotList,
   WorkflowSummary,
+  WorkflowVersion,
   WorkflowView,
 } from './types'
 
@@ -36,6 +38,18 @@ export async function updateWorkflow(id: number, req: SaveWorkflowRequest): Prom
 /** POST /api/workflows/{id}/validate —— 校验当前版本画布结构。 */
 export async function validateWorkflow(id: number): Promise<ValidationResponse> {
   const { data } = await http.post<ApiResponse<ValidationResponse>>(`/workflows/${id}/validate`)
+  return data.data
+}
+
+/** GET /api/workflows/{id}/versions —— 发布记录（全部版本行，含发布人/发布时间）。 */
+export async function listWorkflowVersions(id: number): Promise<WorkflowVersion[]> {
+  const { data } = await http.get<ApiResponse<WorkflowVersion[]>>(`/workflows/${id}/versions`)
+  return data.data
+}
+
+/** GET /api/workflows/{id}/snapshots —— 快照列表（发布快照 + 干跑快照）。 */
+export async function listWorkflowSnapshots(id: number): Promise<WorkflowSnapshotList> {
+  const { data } = await http.get<ApiResponse<WorkflowSnapshotList>>(`/workflows/${id}/snapshots`)
   return data.data
 }
 

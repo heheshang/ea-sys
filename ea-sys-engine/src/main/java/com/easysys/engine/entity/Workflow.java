@@ -20,6 +20,7 @@ public class Workflow {
     private String status;
     private Integer version;
     private String createdBy;
+    private String publishedBy;
     private Instant publishedAt;
     private Instant createdAt;
     private Instant updatedAt;
@@ -88,6 +89,14 @@ public class Workflow {
 
     public void setCreatedBy(String createdBy) {
         this.createdBy = createdBy;
+    }
+
+    public String getPublishedBy() {
+        return publishedBy;
+    }
+
+    public void setPublishedBy(String publishedBy) {
+        this.publishedBy = publishedBy;
     }
 
     public Instant getPublishedAt() {

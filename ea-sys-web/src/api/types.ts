@@ -101,6 +101,36 @@ export interface ValidationResponse {
   errors: string[]
 }
 
+/** 工作流版本/发布记录行（GET /api/workflows/{id}/versions）。 */
+export interface WorkflowVersion {
+  version: number
+  refId: number
+  name: string
+  status: 'draft' | 'published' | 'archived'
+  publishedBy: string | null
+  publishedAt: string | null
+  createdBy: string
+  createdAt: string
+}
+
+/** 干跑快照行（execution dry_run=true，冻结画布版本 + 人群快照）。 */
+export interface WorkflowDryRun {
+  executionId: number
+  workflowVersion: number
+  audienceSnapshotId: number | null
+  audienceName: string | null
+  memberCount: number | null
+  status: string
+  startedAt: string
+  finishedAt: string | null
+}
+
+/** 快照列表（GET /api/workflows/{id}/snapshots）：发布快照 + 干跑快照。 */
+export interface WorkflowSnapshotList {
+  publishSnapshots: WorkflowVersion[]
+  dryRunSnapshots: WorkflowDryRun[]
+}
+
 /** 干跑/执行请求（DryRunRequest）：对已发布版本 + 冻结快照成员模拟执行。 */
 export interface DryRunRequest {
   audienceSnapshotId: number

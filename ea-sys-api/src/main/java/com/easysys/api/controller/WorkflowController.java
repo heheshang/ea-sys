@@ -4,7 +4,9 @@ import com.easysys.api.dto.workflow.DryRunRequest;
 import com.easysys.api.dto.workflow.DryRunResponse;
 import com.easysys.api.dto.workflow.SaveWorkflowRequest;
 import com.easysys.api.dto.workflow.ValidationResponse;
+import com.easysys.api.dto.workflow.WorkflowSnapshotListView;
 import com.easysys.api.dto.workflow.WorkflowSummaryView;
+import com.easysys.api.dto.workflow.WorkflowVersionView;
 import com.easysys.api.dto.workflow.WorkflowView;
 import com.easysys.api.service.WorkflowService;
 import com.easysys.common.web.ApiResponse;
@@ -64,10 +66,23 @@ public class WorkflowController {
         return ApiResponse.ok(workflowService.validate(id));
     }
 
+    /** 发布记录：某业务 id 全部版本行（含发布人/发布时间）。 */
+    @GetMapping("/{id}/versions")
+    public ApiResponse<List<WorkflowVersionView>> versions(@PathVariable Long id) {
+        return ApiResponse.ok(workflowService.versions(id));
+    }
+
+    /** 快照列表：发布快照（版本行）+ 干跑快照（dry-run 执行记录）。 */
+    @GetMapping("/{id}/snapshots")
+    public ApiResponse<WorkflowSnapshotListView> snapshots(@PathVariable Long id) {
+        return ApiResponse.ok(workflowService.snapshots(id));
+    }
+
     /** 发布当前草稿版本（旧发布行归档）。 */
     @PostMapping("/{id}/publish")
-    public ApiResponse<WorkflowView> publish(@PathVariable Long id) {
-        return ApiResponse.ok(workflowService.publish(id));
+    public ApiResponse<WorkflowView> publish(@PathVariable Long id,
+                                             @RequestAttribute String username) {
+        return ApiResponse.ok(workflowService.publish(id, username));
     }
 
     /** 干跑：对已发布版本 + 快照成员模拟执行，返回报告。 */

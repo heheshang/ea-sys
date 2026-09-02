@@ -4,7 +4,7 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
-import com.easysys.api.mybatis.JsonbStringTypeHandler;
+import com.easysys.common.mybatis.JsonbStringTypeHandler;
 
 import java.time.Instant;
 

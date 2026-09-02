@@ -3,6 +3,7 @@ package com.easysys.api.config;
 import com.easysys.common.web.ApiResponse;
 import com.easysys.common.web.BizException;
 import com.easysys.common.web.ErrorCode;
+import com.easysys.engine.EngineException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -30,6 +31,13 @@ public class GlobalExceptionHandler {
             return HttpStatus.NOT_FOUND;
         }
         return HttpStatus.BAD_REQUEST;
+    }
+
+    /** 引擎校验/执行异常 → 400，message 直接透出（条件 DSL 非法、流非法等）。 */
+    @ExceptionHandler(EngineException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ApiResponse<Void> engine(EngineException e) {
+        return ApiResponse.error(ErrorCode.BAD_REQUEST, e.getMessage());
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

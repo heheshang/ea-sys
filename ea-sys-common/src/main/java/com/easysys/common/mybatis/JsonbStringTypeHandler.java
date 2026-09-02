@@ -1,4 +1,4 @@
-package com.easysys.api.mybatis;
+package com.easysys.common.mybatis;
 
 import org.apache.ibatis.type.BaseTypeHandler;
 import org.apache.ibatis.type.JdbcType;

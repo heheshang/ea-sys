@@ -1,4 +1,4 @@
-package com.easysys.api.entity;
+package com.easysys.engine.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
@@ -6,23 +6,20 @@ import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.easysys.common.mybatis.JsonbStringTypeHandler;
-
 import java.time.Instant;
 
-@TableName("contact")
-public class Contact {
+@TableName("workflow_edge")
+public class WorkflowEdge {
 
     @TableId(type = IdType.AUTO)
     private Long id;
     private Long tenantId;
-    private String externalId;
-    private String phone;
-    private String email;
-    private String pushToken;
-    private String wechatOpenid;
-    private String status;
+    private Long workflowId;
+    private Integer version;
+    private String sourceKey;
+    private String targetKey;
     @TableField(typeHandler = JsonbStringTypeHandler.class)
-    private String suppression;
+    private String condition;
     private Instant createdAt;
     private Instant updatedAt;
     @TableLogic
@@ -44,60 +41,44 @@ public class Contact {
         this.tenantId = tenantId;
     }
 
-    public String getExternalId() {
-        return externalId;
+    public Long getWorkflowId() {
+        return workflowId;
     }
 
-    public void setExternalId(String externalId) {
-        this.externalId = externalId;
+    public void setWorkflowId(Long workflowId) {
+        this.workflowId = workflowId;
     }
 
-    public String getPhone() {
-        return phone;
+    public Integer getVersion() {
+        return version;
     }
 
-    public void setPhone(String phone) {
-        this.phone = phone;
+    public void setVersion(Integer version) {
+        this.version = version;
     }
 
-    public String getEmail() {
-        return email;
+    public String getSourceKey() {
+        return sourceKey;
     }
 
-    public void setEmail(String email) {
-        this.email = email;
+    public void setSourceKey(String sourceKey) {
+        this.sourceKey = sourceKey;
     }
 
-    public String getPushToken() {
-        return pushToken;
+    public String getTargetKey() {
+        return targetKey;
     }
 
-    public void setPushToken(String pushToken) {
-        this.pushToken = pushToken;
+    public void setTargetKey(String targetKey) {
+        this.targetKey = targetKey;
     }
 
-    public String getWechatOpenid() {
-        return wechatOpenid;
+    public String getCondition() {
+        return condition;
     }
 
-    public void setWechatOpenid(String wechatOpenid) {
-        this.wechatOpenid = wechatOpenid;
-    }
-
-    public String getStatus() {
-        return status;
-    }
-
-    public void setStatus(String status) {
-        this.status = status;
-    }
-
-    public String getSuppression() {
-        return suppression;
-    }
-
-    public void setSuppression(String suppression) {
-        this.suppression = suppression;
+    public void setCondition(String condition) {
+        this.condition = condition;
     }
 
     public Instant getCreatedAt() {
@@ -115,7 +96,6 @@ public class Contact {
     public void setUpdatedAt(Instant updatedAt) {
         this.updatedAt = updatedAt;
     }
-
     public Boolean getDeleted() {
         return deleted;
     }

@@ -1,26 +1,26 @@
-package com.easysys.api.entity;
+package com.easysys.engine.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
-import com.easysys.common.mybatis.JsonbStringTypeHandler;
-
 import java.time.Instant;
 
-@TableName("audience")
-public class Audience {
+@TableName("workflow")
+public class Workflow {
 
     @TableId(type = IdType.AUTO)
     private Long id;
+    /** 业务 id：同一工作流所有版本行共享（对外引用一律用 refId） */
+    private Long refId;
     private Long tenantId;
     private String name;
-    @TableField(typeHandler = JsonbStringTypeHandler.class)
-    private String rule;
-    private Integer version;
+    private String description;
     private String status;
+    private Integer version;
     private String createdBy;
+    private Instant publishedAt;
     private Instant createdAt;
     private Instant updatedAt;
     @TableLogic
@@ -32,6 +32,14 @@ public class Audience {
 
     public void setId(Long id) {
         this.id = id;
+    }
+
+    public Long getRefId() {
+        return refId;
+    }
+
+    public void setRefId(Long refId) {
+        this.refId = refId;
     }
 
     public Long getTenantId() {
@@ -50,20 +58,12 @@ public class Audience {
         this.name = name;
     }
 
-    public String getRule() {
-        return rule;
+    public String getDescription() {
+        return description;
     }
 
-    public void setRule(String rule) {
-        this.rule = rule;
-    }
-
-    public Integer getVersion() {
-        return version;
-    }
-
-    public void setVersion(Integer version) {
-        this.version = version;
+    public void setDescription(String description) {
+        this.description = description;
     }
 
     public String getStatus() {
@@ -74,12 +74,28 @@ public class Audience {
         this.status = status;
     }
 
+    public Integer getVersion() {
+        return version;
+    }
+
+    public void setVersion(Integer version) {
+        this.version = version;
+    }
+
     public String getCreatedBy() {
         return createdBy;
     }
 
     public void setCreatedBy(String createdBy) {
         this.createdBy = createdBy;
+    }
+
+    public Instant getPublishedAt() {
+        return publishedAt;
+    }
+
+    public void setPublishedAt(Instant publishedAt) {
+        this.publishedAt = publishedAt;
     }
 
     public Instant getCreatedAt() {
@@ -97,7 +113,6 @@ public class Audience {
     public void setUpdatedAt(Instant updatedAt) {
         this.updatedAt = updatedAt;
     }
-
     public Boolean getDeleted() {
         return deleted;
     }

@@ -5,9 +5,9 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 
-@SpringBootApplication
+@SpringBootApplication(scanBasePackages = {"com.easysys.api", "com.easysys.engine"})
 @ConfigurationPropertiesScan
-@MapperScan("com.easysys.api.mapper")
+@MapperScan({"com.easysys.api.mapper", "com.easysys.engine.mapper"})
 public class EaSysApplication {
 
     public static void main(String[] args) {

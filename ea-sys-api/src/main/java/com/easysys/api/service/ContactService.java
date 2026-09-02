@@ -28,6 +28,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 接触库：contact + 属性/标签（全量替换语义）。
@@ -83,7 +85,13 @@ public class ContactService {
         }
         w.orderByDesc(Contact::getCreatedAt);
         IPage<Contact> p = contactMapper.selectPage(new Page<>(page, size), w);
-        List<ContactResponse> records = p.getRecords().stream().map(this::toSummary).toList();
+        List<Contact> contacts = p.getRecords();
+        Map<Long, List<ContactAttribute>> attrsByContact = loadAttrs(contacts);
+        Map<Long, List<ContactTag>> tagsByContact = loadTags(contacts);
+        List<ContactResponse> records = contacts.stream()
+                .map(c -> toResponse(c, attrsByContact.getOrDefault(c.getId(), List.of()),
+                        tagsByContact.getOrDefault(c.getId(), List.of())))
+                .toList();
         return PageResponse.of(records, p.getTotal(), page, size);
     }
 
@@ -150,26 +158,40 @@ public class ContactService {
         }
     }
 
-    private ContactResponse loadResponse(Long id) {
-        Contact c = requireContact(id);
-        // 属性/标签读取
-        Map<String, Object> attributes = new LinkedHashMap<>();
-        List<String> tags = new ArrayList<>();
-        attributeMapper.selectList(new LambdaQueryWrapper<ContactAttribute>()
-                        .eq(ContactAttribute::getContactId, id).orderByAsc(ContactAttribute::getKey))
-                .forEach(a -> attributes.put(a.getKey(), readJson(a.getValue())));
-        tagMapper.selectList(new LambdaQueryWrapper<ContactTag>()
-                        .eq(ContactTag::getContactId, id).orderByAsc(ContactTag::getTag))
-                .forEach(t -> tags.add(t.getTag()));
-        return new ContactResponse(c.getId(), c.getExternalId(), c.getPhone(), c.getEmail(),
-                c.getPushToken(), c.getWechatOpenid(), c.getStatus(), c.getCreatedAt(), c.getUpdatedAt(),
-                attributes, tags);
+    private Map<Long, List<ContactAttribute>> loadAttrs(List<Contact> contacts) {
+        if (contacts.isEmpty()) {
+            return Map.of();
+        }
+        Set<Long> ids = contacts.stream().map(Contact::getId).collect(Collectors.toSet());
+        List<ContactAttribute> all = attributeMapper.selectList(new LambdaQueryWrapper<ContactAttribute>()
+                .in(ContactAttribute::getContactId, ids).orderByAsc(ContactAttribute::getKey));
+        return all.stream().collect(Collectors.groupingBy(ContactAttribute::getContactId));
     }
 
-    private ContactResponse toSummary(Contact c) {
+    private Map<Long, List<ContactTag>> loadTags(List<Contact> contacts) {
+        if (contacts.isEmpty()) {
+            return Map.of();
+        }
+        Set<Long> ids = contacts.stream().map(Contact::getId).collect(Collectors.toSet());
+        List<ContactTag> all = tagMapper.selectList(new LambdaQueryWrapper<ContactTag>()
+                .in(ContactTag::getContactId, ids).orderByAsc(ContactTag::getTag));
+        return all.stream().collect(Collectors.groupingBy(ContactTag::getContactId));
+    }
+
+    private ContactResponse toResponse(Contact c, List<ContactAttribute> attrs, List<ContactTag> tags) {
+        Map<String, Object> attributes = new LinkedHashMap<>();
+        List<String> tagList = new ArrayList<>();
+        attrs.forEach(a -> attributes.put(a.getKey(), readJson(a.getValue())));
+        tags.forEach(t -> tagList.add(t.getTag()));
         return new ContactResponse(c.getId(), c.getExternalId(), c.getPhone(), c.getEmail(),
                 c.getPushToken(), c.getWechatOpenid(), c.getStatus(), c.getCreatedAt(), c.getUpdatedAt(),
-                Map.of(), List.of());
+                attributes, tagList);
+    }
+
+    private ContactResponse loadResponse(Long id) {
+        Contact c = requireContact(id);
+        List<Contact> one = List.of(c);
+        return toResponse(c, loadAttrs(one).getOrDefault(id, List.of()), loadTags(one).getOrDefault(id, List.of()));
     }
 
     private Contact requireContact(Long id) {

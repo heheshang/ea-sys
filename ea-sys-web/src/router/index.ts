@@ -22,6 +22,12 @@ const router = createRouter({
           meta: { title: '工作流' },
         },
         {
+          path: 'contacts',
+          name: 'contacts',
+          component: () => import('../views/ContactsView.vue'),
+          meta: { title: '联系人' },
+        },
+        {
           path: 'audiences',
           name: 'audiences',
           component: () => import('../views/AudienceListView.vue'),

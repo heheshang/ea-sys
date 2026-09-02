@@ -10,6 +10,7 @@ const auth = useAuthStore()
 
 const menus = [
   { path: '/workflows', label: '工作流' },
+  { path: '/contacts', label: '联系人' },
   { path: '/audiences', label: '人群管理' },
   { path: '/canvas', label: 'DAG 编排' },
   { path: '/dashboard', label: '留存看板' },

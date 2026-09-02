@@ -31,7 +31,9 @@ import com.easysys.engine.mapper.WorkflowEdgeMapper;
 import com.easysys.engine.mapper.WorkflowNodeMapper;
 import com.easysys.engine.mapper.WorkflowMapper;
 import com.easysys.engine.rule.ConditionCompiler;
+import com.easysys.engine.service.AbstractDagExecutor;
 import com.easysys.engine.service.DryRunExecutor;
+import com.easysys.engine.service.WorkflowExecutor;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -64,6 +66,7 @@ public class WorkflowService {
     private final DagValidator dagValidator;
     private final ConditionCompiler conditionCompiler;
     private final DryRunExecutor dryRunExecutor;
+    private final WorkflowExecutor workflowExecutor;
     private final AudienceSnapshotMapper snapshotMapper;
     private final AudienceSnapshotMemberMapper memberMapper;
     private final ContactMapper contactMapper;
@@ -74,7 +77,8 @@ public class WorkflowService {
     public WorkflowService(WorkflowMapper workflowMapper, WorkflowNodeMapper nodeMapper,
                            WorkflowEdgeMapper edgeMapper, ExecutionMapper executionMapper,
                            DagValidator dagValidator, ConditionCompiler conditionCompiler,
-                           DryRunExecutor dryRunExecutor, AudienceSnapshotMapper snapshotMapper,
+                           DryRunExecutor dryRunExecutor, WorkflowExecutor workflowExecutor,
+                           AudienceSnapshotMapper snapshotMapper,
                            AudienceSnapshotMemberMapper memberMapper, ContactMapper contactMapper,
                            ContactAttributeMapper attributeMapper, ContactTagMapper tagMapper,
                            ObjectMapper json) {
@@ -85,6 +89,7 @@ public class WorkflowService {
         this.dagValidator = dagValidator;
         this.conditionCompiler = conditionCompiler;
         this.dryRunExecutor = dryRunExecutor;
+        this.workflowExecutor = workflowExecutor;
         this.snapshotMapper = snapshotMapper;
         this.memberMapper = memberMapper;
         this.contactMapper = contactMapper;
@@ -189,15 +194,32 @@ public class WorkflowService {
 
     /** 干跑：对已发布版本 + 冻结快照成员模拟执行；失败场景在报告内可见（execution=FAILED）。 */
     public DryRunResponse dryRun(Long id, DryRunRequest req) {
+        List<AbstractDagExecutor.MemberContext> members = executionPreamble(id, req, "干跑");
         Workflow wf = publishedRow(id);
-        if (wf == null) {
-            if (editableRow(id) == null) {
-                requireWorkflow(id); // 404
-            }
-            throw new BizException(ErrorCode.BAD_REQUEST, "请先发布再干跑");
+        WorkflowSnapshot ws = canvasOf(wf);
+        AbstractDagExecutor.ExecutionReport report = dryRunExecutor.execute(wf, ws.nodes, ws.edges,
+                req.audienceSnapshotId(), members);
+        return DryRunResponse.from(report);
+    }
+
+    /** 真实触达执行：与干跑同语义，ACTION 节点真实下发（治理/频率/幂等拦截计入 skipped）。 */
+    public DryRunResponse execute(Long id, DryRunRequest req) {
+        List<AbstractDagExecutor.MemberContext> members = executionPreamble(id, req, "执行");
+        Workflow wf = publishedRow(id);
+        WorkflowSnapshot ws = canvasOf(wf);
+        AbstractDagExecutor.ExecutionReport report = workflowExecutor.execute(wf, ws.nodes, ws.edges,
+                req.audienceSnapshotId(), members);
+        return DryRunResponse.from(report);
+    }
+
+    /** 干跑/真实执行的公共前置校验：已发布版本 + 快照就绪，装配成员画像。 */
+    private List<AbstractDagExecutor.MemberContext> executionPreamble(Long id, DryRunRequest req, String action) {
+        if (publishedRow(id) == null) {
+            requireWorkflow(id); // 404（id 不存在）
+            throw new BizException(ErrorCode.BAD_REQUEST, "请先发布再" + action);
         }
         if (req == null || req.audienceSnapshotId() == null) {
-            throw new BizException(ErrorCode.BAD_REQUEST, "干跑需要 audienceSnapshotId");
+            throw new BizException(ErrorCode.BAD_REQUEST, action + "需要 audienceSnapshotId");
         }
         AudienceSnapshot snap = snapshotMapper.selectById(req.audienceSnapshotId());
         if (snap == null) {
@@ -206,18 +228,22 @@ public class WorkflowService {
         if (!"ready".equals(snap.getStatus())) {
             throw new BizException(ErrorCode.BAD_REQUEST, "快照未就绪（当前: " + snap.getStatus() + "）");
         }
+        return loadMembers(snap);
+    }
+
+    private record WorkflowSnapshot(List<WorkflowNode> nodes, List<WorkflowEdge> edges) {
+    }
+
+    private WorkflowSnapshot canvasOf(Workflow wf) {
         List<WorkflowNode> nodes = nodeMapper.selectList(
                 new LambdaQueryWrapper<WorkflowNode>()
-                        .eq(WorkflowNode::getWorkflowId, id)
+                        .eq(WorkflowNode::getWorkflowId, wf.getRefId())
                         .eq(WorkflowNode::getVersion, wf.getVersion()));
         List<WorkflowEdge> edges = edgeMapper.selectList(
                 new LambdaQueryWrapper<WorkflowEdge>()
-                        .eq(WorkflowEdge::getWorkflowId, id)
+                        .eq(WorkflowEdge::getWorkflowId, wf.getRefId())
                         .eq(WorkflowEdge::getVersion, wf.getVersion()));
-        List<DryRunExecutor.MemberContext> members = loadMembers(snap);
-        DryRunExecutor.ExecutionReport report = dryRunExecutor.execute(wf, nodes, edges,
-                snap.getId(), members);
-        return DryRunResponse.from(report);
+        return new WorkflowSnapshot(nodes, edges);
     }
 
     /** 按 executionId 查询执行/干跑报告。 */
@@ -335,8 +361,8 @@ public class WorkflowService {
         }
     }
 
-    /** 快照成员 → 画像上下文（contact.* = 直属列 + attributes + tags 展开）。 */
-    private List<DryRunExecutor.MemberContext> loadMembers(AudienceSnapshot snap) {
+    /** 快照成员 → 画像上下文（contact.* = 直属列 + attributes + tags + 退订渠道展开）。 */
+    private List<AbstractDagExecutor.MemberContext> loadMembers(AudienceSnapshot snap) {
         List<Long> ids = memberMapper.selectList(
                         new LambdaQueryWrapper<AudienceSnapshotMember>()
                                 .eq(AudienceSnapshotMember::getSnapshotId, snap.getId()))
@@ -370,7 +396,7 @@ public class WorkflowService {
             }
         }
 
-        List<DryRunExecutor.MemberContext> members = new ArrayList<>(ids.size());
+        List<AbstractDagExecutor.MemberContext> members = new ArrayList<>(ids.size());
         for (Long id : ids) {
             Contact c = contacts.get(id);
             if (c == null) {
@@ -386,11 +412,45 @@ public class WorkflowService {
             putIfNotNull(ctx, "phone", c.getPhone());
             putIfNotNull(ctx, "email", c.getEmail());
             putIfNotNull(ctx, "externalId", c.getExternalId());
+            ctx.put("suppressedChannels", suppressedChannels(c.getSuppression()));
             List<String> t = tags.get(id);
             ctx.put("tags", t == null ? List.of() : t);
-            members.add(new DryRunExecutor.MemberContext(id, ctx, Map.of(), Map.of()));
+            members.add(new AbstractDagExecutor.MemberContext(id, ctx, Map.of(), Map.of()));
         }
         return members;
+    }
+
+    /**
+     * 退订渠道解析：suppression jsonb → List[channel]（"*" = 全渠道退订）。
+     * 格式 {"channels":["sms","email"]} 或 {"all":true}；空/非法 → 空列表（不拦截）。
+     */
+    private List<String> suppressedChannels(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return List.of();
+        }
+        try {
+            JsonNode n = json.readTree(raw);
+            if (n.isArray()) {
+                List<String> out = new ArrayList<>();
+                n.forEach(x -> out.add(x.asText()));
+                return out;
+            }
+            if (n.isObject()) {
+                JsonNode all = n.get("all");
+                if (all != null && all.isBoolean() && all.asBoolean()) {
+                    return List.of("*");
+                }
+                JsonNode channels = n.get("channels");
+                if (channels != null && channels.isArray()) {
+                    List<String> out = new ArrayList<>();
+                    channels.forEach(x -> out.add(x.asText()));
+                    return out;
+                }
+            }
+        } catch (JsonProcessingException ignored) {
+            // 非法 JSON 不拦截（真实数据由写入侧校验）
+        }
+        return List.of();
     }
 
     /** jsonb 属性值 → QLExpress 可比标量（数字/布尔/字符串），非法 JSON 原样字符串。 */

@@ -69,6 +69,13 @@ public class WorkflowController {
         return ApiResponse.ok(workflowService.dryRun(id, req));
     }
 
+    /** 真实触达执行：ACTION 节点按模板经频道下发，幂等+频率治理，返回报告。 */
+    @PostMapping("/{id}/execute")
+    public ApiResponse<DryRunResponse> execute(@PathVariable Long id,
+                                               @Valid @RequestBody DryRunRequest req) {
+        return ApiResponse.ok(workflowService.execute(id, req));
+    }
+
     /** 按执行实例查询干跑报告（执行后重查）。 */
     @GetMapping("/executions/{executionId}/report")
     public ApiResponse<DryRunResponse> report(@PathVariable Long executionId) {

@@ -1,6 +1,6 @@
 package com.easysys.api.dto.workflow;
 
-import com.easysys.engine.service.DryRunExecutor;
+import com.easysys.engine.service.AbstractDagExecutor;
 import com.fasterxml.jackson.databind.JsonNode;
 
 import java.util.List;
@@ -28,7 +28,7 @@ public record DryRunResponse(
             JsonNode output) {
     }
 
-    public static DryRunResponse from(DryRunExecutor.ExecutionReport r) {
+    public static DryRunResponse from(AbstractDagExecutor.ExecutionReport r) {
         List<NodeOutcome> outcomes = r.nodes().stream()
                 .map(n -> new NodeOutcome(n.nodeKey(), n.nodeType(), n.nodeName(), n.status(),
                         n.contacts(), n.output()))

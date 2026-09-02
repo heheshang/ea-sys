@@ -19,12 +19,14 @@ import com.easysys.api.entity.AudienceSnapshotMember;
 import com.easysys.api.entity.Contact;
 import com.easysys.api.entity.ContactAttribute;
 import com.easysys.api.entity.ContactTag;
+import com.easysys.api.entity.ValidationReport;
 import com.easysys.api.mapper.AudienceMapper;
 import com.easysys.api.mapper.AudienceSnapshotMapper;
 import com.easysys.api.mapper.AudienceSnapshotMemberMapper;
 import com.easysys.api.mapper.ContactAttributeMapper;
 import com.easysys.api.mapper.ContactMapper;
 import com.easysys.api.mapper.ContactTagMapper;
+import com.easysys.api.mapper.ValidationReportMapper;
 import com.easysys.common.tenant.TenantContext;
 import com.easysys.common.web.BizException;
 import com.easysys.common.web.ErrorCode;
@@ -83,6 +85,7 @@ public class WorkflowService {
     private final ContactMapper contactMapper;
     private final ContactAttributeMapper attributeMapper;
     private final ContactTagMapper tagMapper;
+    private final ValidationReportMapper validationReportMapper;
     private final ObjectMapper json;
 
     public WorkflowService(WorkflowMapper workflowMapper, WorkflowNodeMapper nodeMapper,
@@ -93,6 +96,7 @@ public class WorkflowService {
                            AudienceSnapshotMapper snapshotMapper,
                            AudienceSnapshotMemberMapper memberMapper, ContactMapper contactMapper,
                            ContactAttributeMapper attributeMapper, ContactTagMapper tagMapper,
+                           ValidationReportMapper validationReportMapper,
                            ObjectMapper json) {
         this.workflowMapper = workflowMapper;
         this.nodeMapper = nodeMapper;
@@ -106,6 +110,7 @@ public class WorkflowService {
         this.snapshotMapper = snapshotMapper;
         this.memberMapper = memberMapper;
         this.contactMapper = contactMapper;
+        this.validationReportMapper = validationReportMapper;
         this.attributeMapper = attributeMapper;
         this.tagMapper = tagMapper;
         this.json = json;
@@ -268,6 +273,12 @@ public class WorkflowService {
         List<String> errors = validateRows(wf);
         if (!errors.isEmpty()) {
             throw new BizException(ErrorCode.BAD_REQUEST, "画布校验不通过: " + String.join("; ", errors));
+        }
+        // 计划导入校验闸门：最近一次校验报告 BLOCKED → 拒绝发布
+        ValidationReport latestReport = validationReportMapper.selectLatest(TenantContext.require(), wf.getRefId());
+        if (latestReport != null && "BLOCKED".equals(latestReport.getDecision())) {
+            throw new BizException(ErrorCode.BAD_REQUEST,
+                    "计划校验未通过（BLOCKED）：请调整计划或工作流后重新导入校验");
         }
         // 归档同 id 下其它 published 历史版本行
         List<Workflow> sameId = workflowMapper.selectList(

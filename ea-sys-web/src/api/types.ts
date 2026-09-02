@@ -175,6 +175,38 @@ export interface DryRunResponse {
   nodes: NodeOutcome[]
 }
 
+/** 计划校验单维度比对结果（PlanValidationView.Dimension）。 */
+export interface PlanValidationDimension {
+  name: string
+  level: 'PASSED' | 'WARNINGS' | 'BLOCKED'
+  plan: string | null
+  workflow: string | null
+  detail: string | null
+  suggestion: string | null
+}
+
+/** 计划校验汇总计数：conflicts=BLOCKED 数，warnings=WARNINGS 数，passed=其余。 */
+export interface PlanValidationSummary {
+  conflicts: number
+  warnings: number
+  passed: number
+}
+
+/** 计划校验报告（GET /api/plan-validation/{workflowId}）。 */
+export interface PlanValidationView {
+  id: number | null
+  workflowId: number
+  planName: string | null
+  fileType: string | null
+  fileName: string | null
+  decision: 'PASSED' | 'WARNINGS' | 'BLOCKED'
+  planSummary: string | null
+  dimensions: PlanValidationDimension[]
+  summary: PlanValidationSummary
+  createdAt: string | null
+  createdBy: string | null
+}
+
 /** 触达模板（TemplateView）。 */
 export interface Template {
   id: number

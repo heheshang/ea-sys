@@ -4,6 +4,7 @@ import type {
   DryRunRequest,
   DryRunResponse,
   ExecutionSummary,
+  PlanValidationView,
   SaveWorkflowRequest,
   ValidationResponse,
   WorkflowSnapshotList,
@@ -86,4 +87,27 @@ export async function listWorkflowExecutions(opts?: {
 }): Promise<ExecutionSummary[]> {
   const { data } = await http.get<ApiResponse<ExecutionSummary[]>>('/workflows/executions', { params: opts })
   return data.data
+}
+
+/** POST /api/plan-validation/{workflowId}/import —— 导入计划文件并校验（multipart）。 */
+export async function importPlanValidation(id: number, file: File): Promise<PlanValidationView> {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await http.post<ApiResponse<PlanValidationView>>(`/plan-validation/${id}/import`, form)
+  return data.data
+}
+
+/** GET /api/plan-validation/{workflowId} —— 最近一次校验报告回看。 */
+export async function getPlanValidation(id: number): Promise<PlanValidationView | null> {
+  const { data } = await http.get<ApiResponse<PlanValidationView | null>>(`/plan-validation/${id}`)
+  return data.data
+}
+
+/** GET /api/plan-validation/template?type=xlsx|csv —— 下载空白计划模板。 */
+export async function downloadPlanValidationTemplate(type: 'xlsx' | 'csv'): Promise<Blob> {
+  const res = await http.get(`/plan-validation/template`, {
+    params: { type },
+    responseType: 'blob',
+  })
+  return res.data
 }

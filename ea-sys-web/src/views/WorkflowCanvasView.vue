@@ -18,8 +18,11 @@ import CanvasNode from '../components/canvas/CanvasNode.vue'
 import EdgeConditionEditor from '../components/canvas/EdgeConditionEditor.vue'
 import {
   createWorkflow,
+  downloadPlanValidationTemplate,
   dryRunWorkflow,
+  getPlanValidation,
   getWorkflow,
+  importPlanValidation,
   publishWorkflow,
   updateWorkflow,
   validateWorkflow,
@@ -31,6 +34,7 @@ import type {
   AudienceSnapshot,
   ConditionRule,
   DryRunResponse,
+  PlanValidationView,
   SaveWorkflowRequest,
   Template,
   ValidationResponse,
@@ -522,6 +526,77 @@ async function runDryRun() {
   }
 }
 
+/* ---------- 计划导入校验 ---------- */
+
+const planImportDialog = ref(false)
+const planImportFile = ref<File | null>(null)
+const planImporting = ref(false)
+const planReportVisible = ref(false)
+const planReport = ref<PlanValidationView | null>(null)
+
+function openPlanImport() {
+  planImportFile.value = null
+  planImportDialog.value = true
+}
+
+function onPlanFileChange(file: File) {
+  planImportFile.value = file
+}
+
+async function downloadPlanTemplate(type: 'xlsx' | 'csv') {
+  try {
+    const blob = await downloadPlanValidationTemplate(type)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `计划导入模板.${type}`
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    ElMessage.error((e as Error).message || '模板下载失败')
+  }
+}
+
+async function runPlanImport() {
+  if (!planImportFile.value) {
+    ElMessage.warning('请选择计划文件（.xlsx / .csv）')
+    return
+  }
+  planImporting.value = true
+  try {
+    const view = await importPlanValidation(workflowId.value!, planImportFile.value)
+    planImportDialog.value = false
+    planReport.value = view
+    planReportVisible.value = true
+    if (view.decision === 'PASSED') {
+      ElMessage.success(`校验通过：${view.summary.passed} 项一致`)
+    } else if (view.decision === 'WARNINGS') {
+      ElMessage.warning(`校验有告警：${view.summary.warnings} 项需关注`)
+    } else {
+      ElMessage.error(`校验未通过：${view.summary.conflicts} 项冲突，发布将被拦截`)
+    }
+  } catch (e) {
+    ElMessage.error((e as Error).message || '计划校验失败')
+  } finally {
+    planImporting.value = false
+  }
+}
+
+async function openPlanReport() {
+  if (!workflowId.value) return
+  try {
+    const view = await getPlanValidation(workflowId.value)
+    if (!view) {
+      ElMessage.info('尚无校验记录，请先导入计划')
+      return
+    }
+    planReport.value = view
+    planReportVisible.value = true
+  } catch (e) {
+    ElMessage.error((e as Error).message || '获取校验报告失败')
+  }
+}
+
 /* ---------- 自动布局 ---------- */
 
 function autoLayout() {
@@ -566,6 +641,8 @@ onMounted(load)
           发布
         </el-button>
         <el-button type="warning" :disabled="status !== 'published'" @click="openDryRun">干跑</el-button>
+        <el-button type="primary" plain @click="openPlanImport">导入计划校验</el-button>
+        <el-button @click="openPlanReport">校验报告</el-button>
       </div>
     </div>
 
@@ -855,6 +932,87 @@ onMounted(load)
         </el-table>
       </template>
     </el-drawer>
+
+    <!-- 计划导入校验弹窗 -->
+    <el-dialog v-model="planImportDialog" title="导入计划校验" width="480px">
+      <el-form label-width="90px">
+        <el-form-item label="计划文件">
+          <el-upload
+            :auto-upload="false"
+            :limit="1"
+            accept=".xlsx,.csv"
+            :on-change="(f: any) => onPlanFileChange(f.raw)"
+            :on-remove="() => (planImportFile = null)"
+          >
+            <el-button>选择文件（.xlsx / .csv）</el-button>
+          </el-upload>
+        </el-form-item>
+        <el-form-item label="空白模板">
+          <div class="plan-template-links">
+            <el-link type="primary" @click="downloadPlanTemplate('xlsx')">下载 xlsx 模板</el-link>
+            <el-link type="primary" @click="downloadPlanTemplate('csv')">下载 csv 模板</el-link>
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="planImportDialog = false">取消</el-button>
+        <el-button type="primary" :loading="planImporting" @click="runPlanImport">开始校验</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 计划校验报告抽屉 -->
+    <el-drawer v-model="planReportVisible" title="计划校验报告" size="640px">
+      <template v-if="planReport">
+        <div class="report-summary">
+          <el-descriptions :column="2" border size="small">
+            <el-descriptions-item label="计划名称">{{ planReport.planName ?? '-' }}</el-descriptions-item>
+            <el-descriptions-item label="决策">
+              <el-tag :type="planReport.decision === 'PASSED' ? 'success' : planReport.decision === 'WARNINGS' ? 'warning' : 'danger'">
+                {{ planReport.decision }}
+              </el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="文件">{{ planReport.fileName ?? '-' }}（{{ planReport.fileType ?? '-' }}）</el-descriptions-item>
+            <el-descriptions-item label="校验时间">{{ planReport.createdAt ?? '-' }}</el-descriptions-item>
+          </el-descriptions>
+          <el-alert
+            v-if="planReport.decision === 'BLOCKED'"
+            title="存在 BLOCKED 冲突维度，发布将被拦截，请修正计划后重新导入。"
+            type="error"
+            :closable="false"
+            class="report-error"
+          />
+          <el-alert
+            v-else-if="planReport.decision === 'WARNINGS'"
+            title="存在 WARNINGS 告警维度，建议修正后重新导入。"
+            type="warning"
+            :closable="false"
+            class="report-error"
+          />
+          <el-alert
+            v-if="planReport.summary.conflicts > 0 || planReport.summary.warnings > 0"
+            :title="`冲突 ${planReport.summary.conflicts} · 告警 ${planReport.summary.warnings} · 一致 ${planReport.summary.passed}`"
+            type="info"
+            :closable="false"
+            class="report-error"
+          />
+        </div>
+        <el-table :data="planReport.dimensions" size="small" border>
+          <el-table-column prop="name" label="维度" width="100" />
+          <el-table-column prop="level" label="结论" width="90">
+            <template #default="{ row }">
+              <el-tag :type="row.level === 'PASSED' ? 'success' : row.level === 'WARNINGS' ? 'warning' : 'danger'" size="small">
+                {{ row.level }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="plan" label="计划" min-width="110" show-overflow-tooltip />
+          <el-table-column prop="workflow" label="工作流" min-width="110" show-overflow-tooltip />
+          <el-table-column prop="detail" label="说明" min-width="160" show-overflow-tooltip />
+          <el-table-column prop="suggestion" label="建议" min-width="160" show-overflow-tooltip />
+        </el-table>
+        <div class="plan-summary-text" v-if="planReport.planSummary">计划摘要：{{ planReport.planSummary }}</div>
+      </template>
+    </el-drawer>
   </div>
 </template>
 
@@ -914,6 +1072,17 @@ onMounted(load)
 .palette-item:hover {
   border-color: #409eff;
   color: #409eff;
+}
+.plan-template-links {
+  display: flex;
+  gap: 16px;
+}
+.plan-summary-text {
+  margin-top: 12px;
+  font-size: 13px;
+  color: #606266;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 .palette-tip {
   margin-top: 12px;

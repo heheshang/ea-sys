@@ -107,13 +107,11 @@
 
 ## 6. AgentScope Java 2.0 集成
 
-- **扩展 Agent 基类**：每个 Agent 是独立 Agent 实现（ReAct 风格），注册工具集：
-  - `ProfileSummaryTool`：画像特征摘要，带租户 RLS 过滤，脱敏
-  - `TouchHistoryTool`：近 N 天触达史（不含内容快照）
-  - `ChannelStatusTool`：通道可用性 / 配额余量
-- **结构化输出**：schema 校验在框架层完成，非法输出直接触发 fallback 分支，不进入执行器
-- **多租户隔离**：AgentScope 2.0 原生 multi-tenant session 与租户上下文绑定，prompt 内禁止跨租户数据；工具调用全部经租户过滤器
-- **统一执行封装**：`AgentExecutor` 封装「调用 → schema 校验 → 置信度阈值（< 0.7 走 fallback）→ 审计落库 → 结果分发」，Agent 业务与治理解耦
+- **框架承载点（M6 已落地）**：主提供方逻辑以确定性 `RuleModel`（extends `ChatModelBase`）身份经 `ReActAgent` 执行，输出 JSON 由框架 native 结构化路径解析，多租户隔离由 `RuntimeContext(userId=tenantId, sessionId=action)` 承载。`AgentExecutor` 在此之上保留网络层语义（超时 / 重试 / 阈值闸门）与硬 schema 校验。
+- **LLM 模型位（M6 延后）**：确定性 `RuleModel` 与真实 LLM 共用同一模型位，M6 接入时经 `agentscope-extensions-model-*` 注册，编排 / 审计 / 降级链路零改动。工具集（`ProfileSummaryTool` 画像摘要带租户 RLS 过滤脱敏、`TouchHistoryTool` 近 N 天触达史、`ChannelStatusTool` 通道可用性 / 配额余量）留待 LLM 里程碑注册。
+- **结构化输出**：schema 语义校验由 `AgentExecutor` 承担（networknt 2.0.0 `SchemaRegistry`，实测框架 native 结构化路径只做 JSON 解析、不做 enum/required/minItems 语义校验），非法输出直接触发 fallback 分支，不进入结果分发。
+- **多租户隔离**：AgentScope 2.0 原生 multi-tenant session（`RuntimeContext.userId`）与租户上下文（`TenantContext`）绑定，缺失时（纯规则执行 / 单测）兜底 `anonymous`；prompt 内禁止跨租户数据；工具调用全部经租户过滤器
+- **统一执行封装**：`AgentExecutor` 封装「框架调用（RuleModel + ReActAgent）→ schema 校验 → 置信度阈值（< 0.7 走 fallback）→ 审计落库 → 结果分发」，Agent 业务与治理解耦。超时 / 重试由执行器自建 CALL_POOL 承担（实测框架 `ExecutionConfig` 重试对自定义 Model 不生效）
 
 ## 7. 治理清单
 

@@ -32,6 +32,7 @@
     <qlexpress.version>3.3.2</qlexpress.version>
     <jjwt.version>0.12.6</jjwt.version>
     <redisson.version>3.52.0</redisson.version>
+    <agentscope.version>2.0.0</agentscope.version>
   </properties>
 
   <dependencyManagement>
@@ -95,6 +96,11 @@
         <groupId>org.redisson</groupId>
         <artifactId>redisson-spring-boot-starter</artifactId>
         <version>${redisson.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.agentscope</groupId>
+        <artifactId>agentscope-core</artifactId>
+        <version>${agentscope.version}</version>
       </dependency>
     </dependencies>
   </dependencyManagement>

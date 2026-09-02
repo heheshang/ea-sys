@@ -23,11 +23,16 @@
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
     </dependency>
-    <!-- 结构化输出 schema 校验（AgentExecutor 兜底层，非法输出直接走 fallback） -->
+    <!-- AgentScope Java 2.0 智能体编排基座：确定性 RuleModel 经 ReActAgent 承载主提供方逻辑 -->
+    <dependency>
+      <groupId>io.agentscope</groupId>
+      <artifactId>agentscope-core</artifactId>
+    </dependency>
+    <!-- 结构化输出 schema 语义校验（框架 native 路径只解析 JSON 不做语义校验，AgentExecutor 兜底层负责硬校验） -->
     <dependency>
       <groupId>com.networknt</groupId>
       <artifactId>json-schema-validator</artifactId>
-      <version>1.5.5</version>
+      <version>2.0.0</version>
     </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>

@@ -57,18 +57,21 @@ public class WorkflowExecutor extends AbstractDagExecutor {
     private final TemplateRenderer templateRenderer;
     private final ChannelRouter channelRouter;
     private final FrequencyGuard frequencyGuard;
+    private final DeliveryNotifier deliveryNotifier;
 
     public WorkflowExecutor(ExecutionMapper executionMapper, ExecutionNodeStateMapper stateMapper,
                             ConditionCompiler compiler, DeliveryRecordMapper deliveryRecordMapper,
                             TemplateMapper templateMapper, TemplateRenderer templateRenderer,
                             ChannelRouter channelRouter, @Lazy FrequencyGuard frequencyGuard,
-                            ObjectProvider<AgentSplitHandler> agentSplitHandler) {
+                            ObjectProvider<AgentSplitHandler> agentSplitHandler,
+                            DeliveryNotifier deliveryNotifier) {
         super(executionMapper, stateMapper, compiler, agentSplitHandler);
         this.deliveryRecordMapper = deliveryRecordMapper;
         this.templateMapper = templateMapper;
         this.templateRenderer = templateRenderer;
         this.channelRouter = channelRouter;
         this.frequencyGuard = frequencyGuard;
+        this.deliveryNotifier = deliveryNotifier;
     }
 
     /** 手动真实执行入口：dryRun=false，委托统一 8 参入口（含 PARTIAL 降级）。 */
@@ -182,14 +185,19 @@ public class WorkflowExecutor extends AbstractDagExecutor {
                 continue;
             }
             if (send.result().success()) {
-                String receipt = send.status().name();
-                if ("FAILED".equals(receipt)) {
-                    failed++;
-                } else {
-                    sent++;
-                }
+                // 受理成功 ≠ 触达成功：落 SENT 待回执，真正触达交由回调服务（notify）异步执行，
+                // 通道回执经 notify 回调本服务后更新为 DELIVERED/FAILED。
                 record(executionId, tenantId, contactId, node, channel, templateId, content,
-                        send.channelMessageId(), receipt, send.result().error());
+                        send.channelMessageId(), "SENT", send.result().error());
+                boolean notified = deliveryNotifier.deliver(tenantId, executionId, contactId,
+                        node.getNodeKey(), channel, templateId, content, send.channelMessageId(),
+                        channelAddress(adapter.channel(), contact));
+                if (notified) {
+                    sent++;
+                } else {
+                    updateStatus(send.channelMessageId(), "FAILED", "回调服务不可达，无法确认真正触达");
+                    failed++;
+                }
             } else {
                 record(executionId, tenantId, contactId, node, channel, templateId, content,
                         send.channelMessageId(), "FAILED",
@@ -215,23 +223,14 @@ public class WorkflowExecutor extends AbstractDagExecutor {
         }
     }
 
-    /** 真实通道发送 + 回执查询（查询异常不阻断下发，置 SENT）。 */
+    /** 真实通道受理：send 成功即可获得 channelMsgId，真正的投递结果由通道异步回执（经 notify）回流。 */
     private SendResultHolder doSend(ChannelAdapter adapter, Long tenantId, Long contactId, Long executionId,
                                     WorkflowNode node, Long templateId, String content,
                                     Map<String, Object> contact) {
-        SendResultHolder r = new SendResultHolder(adapter.send(new SendRequest(tenantId, contactId, executionId,
+        return new SendResultHolder(adapter.send(new SendRequest(tenantId, contactId, executionId,
                 node.getNodeKey(), String.valueOf(templateId), content,
                 tenantId + ":" + contactId + ":" + executionId + ":" + node.getNodeKey(),
                 channelAddress(adapter.channel(), contact))));
-        if (r.result().success() && r.channelMessageId() != null) {
-            try {
-                r = new SendResultHolder(r.result(),
-                        adapter.queryStatus(r.channelMessageId()));
-            } catch (Exception e) {
-                r = new SendResultHolder(r.result(), ChannelAdapter.Status.SENT);
-            }
-        }
-        return r;
     }
 
     /** 通道收件地址：sms → phone、email → email、wechat → wechatOpenid；画像缺该键（含非目标通道）→ null，真实通道由适配器拒发。 */
@@ -261,6 +260,16 @@ public class WorkflowExecutor extends AbstractDagExecutor {
             return "suppressed";
         }
         return null;
+    }
+
+    /** 回调路径状态更新：按 channelMsgId 覆盖（同执行内该条唯一）。 */
+    private void updateStatus(String channelMsgId, String status, String error) {
+        DeliveryRecord r = new DeliveryRecord();
+        r.setStatus(status);
+        r.setError(error);
+        r.setUpdatedAt(Instant.now());
+        deliveryRecordMapper.update(r, new LambdaQueryWrapper<DeliveryRecord>()
+                .eq(DeliveryRecord::getChannelMsgId, channelMsgId));
     }
 
     /** 幂等落库：唯一键冲突（并发/重放）视为已下发，忽略。 */
@@ -297,11 +306,7 @@ public class WorkflowExecutor extends AbstractDagExecutor {
         return "模板渲染失败: " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
     }
 
-    private record SendResultHolder(ChannelAdapter.SendResult result, ChannelAdapter.Status status) {
-        SendResultHolder(ChannelAdapter.SendResult result) {
-            this(result, ChannelAdapter.Status.SENT);
-        }
-
+    private record SendResultHolder(ChannelAdapter.SendResult result) {
         String channelMessageId() {
             return result.channelMessageId();
         }

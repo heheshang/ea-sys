@@ -45,6 +45,11 @@ easysys:
   channel:
     # 通道凭据加密口令：AES（AesBytesEncryptor）派生，生产必须经环境变量 CHANNEL_ENCRYPT_PASSWORD 覆盖。
     encrypt-password: ${CHANNEL_ENCRYPT_PASSWORD:ea-sys-dev-channel-key}
+  notify:
+    # 回调服务（ea-sys-notify）地址：受理成功后把真正触达任务交给 notify 异步执行。
+    base-url: ${NOTIFY_BASE_URL:http://localhost:8092}
+    # 回执回调鉴权内部 token：与 ea-sys-notify 的 easysys.notify.callback-token 一致。
+    callback-token: ${NOTIFY_CALLBACK_TOKEN:ea-sys-notify-dev-token}
   agent:
     llm:
       # LLM 主提供方（Token Plan 套餐专属 OpenAI 兼容端点）。enabled 缺省 false 时执行器保持确定性 RuleModel。

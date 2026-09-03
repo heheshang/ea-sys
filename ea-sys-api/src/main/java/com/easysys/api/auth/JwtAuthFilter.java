@@ -24,7 +24,7 @@ import java.util.Set;
 @Order(Ordered.HIGHEST_PRECEDENCE + 10)
 public class JwtAuthFilter extends OncePerRequestFilter {
 
-    private static final Set<String> PUBLIC_PATHS = Set.of("/api/auth/login", "/api/health");
+    private static final Set<String> PUBLIC_PATHS = Set.of("/api/auth/login", "/api/health", "/api/deliveries/callback");
 
     private final JwtUtil jwtUtil;
 

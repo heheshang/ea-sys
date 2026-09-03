@@ -24,6 +24,7 @@
     <module>ea-sys-agent</module>
     <module>ea-sys-channel</module>
     <module>ea-sys-api</module>
+    <module>ea-sys-notify</module>
   </modules>
 
   <properties>

@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -38,6 +39,15 @@ public class GlobalExceptionHandler {
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiResponse<Void> engine(EngineException e) {
         return ApiResponse.error(ErrorCode.BAD_REQUEST, e.getMessage());
+    }
+
+    /** 直接抛出的 HTTP 状态异常（如回调鉴权 401、参数 400）→ 保留状态码透出。 */
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<ApiResponse<Void>> status(ResponseStatusException e) {
+        int code = e.getStatusCode().value() == HttpStatus.UNAUTHORIZED.value()
+                ? ErrorCode.UNAUTHORIZED : ErrorCode.BAD_REQUEST;
+        String message = e.getReason() == null ? "请求错误" : e.getReason();
+        return ResponseEntity.status(e.getStatusCode()).body(ApiResponse.error(code, message));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

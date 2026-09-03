@@ -12,6 +12,7 @@ import com.easysys.common.tenant.TenantInfo;
 import com.easysys.engine.entity.DeliveryRecord;
 import com.easysys.engine.mapper.DeliveryRecordMapper;
 import com.easysys.engine.mapper.WorkflowMapper;
+import com.easysys.engine.service.DeliveryNotifier;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
@@ -20,6 +21,7 @@ import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
@@ -37,6 +39,8 @@ import java.util.Map;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -91,6 +95,9 @@ class M4AgentTests {
     @Autowired
     RedissonClient redisson;
 
+    @MockBean
+    DeliveryNotifier deliveryNotifier;
+
     private static final String AUTH = "Authorization";
 
     private String token;
@@ -99,6 +106,8 @@ class M4AgentTests {
     void login() throws Exception {
         inTenant(workflowMapper::testTruncateAll);
         redisson.getKeys().flushall();
+        when(deliveryNotifier.deliver(any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(true);
         String body = mvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"username\":\"admin\",\"password\":\"admin123\"}"))

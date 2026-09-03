@@ -3,6 +3,7 @@ package com.easysys.api;
 import com.easysys.common.tenant.TenantContext;
 import com.easysys.common.tenant.TenantInfo;
 import com.easysys.engine.mapper.WorkflowMapper;
+import com.easysys.engine.service.DeliveryNotifier;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
@@ -11,6 +12,7 @@ import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
@@ -27,6 +29,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -68,6 +72,9 @@ class M7AudienceNodeTests {
     @Autowired
     RedissonClient redisson;
 
+    @MockBean
+    DeliveryNotifier deliveryNotifier;
+
     private static final String AUTH = "Authorization";
 
     private String token;
@@ -76,6 +83,8 @@ class M7AudienceNodeTests {
     void login() throws Exception {
         inTenant(workflowMapper::testTruncateAll);
         redisson.getKeys().flushall();
+        when(deliveryNotifier.deliver(any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(true);
         String body = mvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"username\":\"admin\",\"password\":\"admin123\"}"))

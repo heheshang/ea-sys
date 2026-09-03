@@ -1,0 +1,18 @@
+server:
+  port: 8092
+
+spring:
+  application:
+    name: ea-sys-notify
+  jackson:
+    time-zone: Asia/Shanghai
+
+easysys:
+  notify:
+    # 主服务回调地址：notify 拿到通道回执后回调此处更新 delivery_record
+    callback-url: ${NOTIFY_CALLBACK_URL:http://localhost:8080/api/deliveries/callback}
+    # 回调鉴权内部 token（与主服务 easysys.notify.callback-token 一致）
+    callback-token: ${NOTIFY_CALLBACK_TOKEN:ea-sys-notify-dev-token}
+    # 模拟真正投递的延迟区间（毫秒）与失败判定关键词（dev 模拟真实通道异步回执；生产接入真实供应商 webhook）
+    simulate-delay-ms: ${NOTIFY_SIMULATE_DELAY_MS:500}
+    simulate-fail-keyword: ${NOTIFY_SIMULATE_FAIL_KEYWORD:触发失败内容}

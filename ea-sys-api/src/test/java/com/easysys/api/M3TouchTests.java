@@ -8,6 +8,7 @@ import com.easysys.common.tenant.TenantInfo;
 import com.easysys.engine.entity.DeliveryRecord;
 import com.easysys.engine.mapper.DeliveryRecordMapper;
 import com.easysys.engine.mapper.WorkflowMapper;
+import com.easysys.engine.service.DeliveryNotifier;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -15,6 +16,7 @@ import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
@@ -32,6 +34,8 @@ import java.util.Map;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -77,6 +81,9 @@ class M3TouchTests {
     @Autowired
     RedissonClient redisson;
 
+    @MockBean
+    DeliveryNotifier deliveryNotifier;
+
     private static final String AUTH = "Authorization";
 
     private String token;
@@ -86,6 +93,9 @@ class M3TouchTests {
         inTenant(workflowMapper::testTruncateAll);
         // 频率计数键跨测试隔离（TRUNCATE 会重置 contact id，Redis 必须同步清空）
         redisson.getKeys().flushall();
+        // 回调服务（notify）不在测试环境：受理成功即落 SENT 待回执；真正触达由回执接口测试单独覆盖
+        when(deliveryNotifier.deliver(any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(true);
         String body = mvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"username\":\"admin\",\"password\":\"admin123\"}"))
@@ -137,14 +147,36 @@ class M3TouchTests {
                                 .orderByAsc(DeliveryRecord::getContactId)))
                 .stream().map(DeliveryRecord::getContent).toList();
         assertThat(contents).containsExactly("亲爱的张伟，您有一份专属福利待领取", "亲爱的李静，您有一份专属福利待领取");
+        // 异步回调语义：受理成功 = SENT（待回执），真正触达需通道回执（经 notify 回调）后为 DELIVERED
         List<String> statuses = inTenant(() -> deliveryRecordMapper.selectList(
                         Wrappers.<DeliveryRecord>lambdaQuery().eq(DeliveryRecord::getExecutionId, executionId)))
                 .stream().map(DeliveryRecord::getStatus).distinct().toList();
-        assertThat(statuses).containsExactly("DELIVERED");
+        assertThat(statuses).containsExactly("SENT");
         Long channelMsgCount = inTenant(() -> deliveryRecordMapper.selectCount(
                 Wrappers.<DeliveryRecord>lambdaQuery().eq(DeliveryRecord::getExecutionId, executionId)
                         .likeRight(DeliveryRecord::getChannelMsgId, "console-")));
         assertThat(channelMsgCount).isEqualTo(2L);
+
+        // 模拟 notify 回执：SENT → DELIVERED；重复回调幂等不回退
+        List<String> msgIds = inTenant(() -> deliveryRecordMapper.selectList(
+                        Wrappers.<DeliveryRecord>lambdaQuery().eq(DeliveryRecord::getExecutionId, executionId)))
+                .stream().map(DeliveryRecord::getChannelMsgId).toList();
+        for (String msgId : msgIds) {
+            mvc.perform(post("/api/deliveries/callback")
+                            .header("X-Internal-Token", "ea-sys-notify-dev-token")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"channelMsgId\":\"" + msgId + "\",\"tenantId\":1,\"status\":\"DELIVERED\"}"))
+                    .andExpect(status().isOk());
+            mvc.perform(post("/api/deliveries/callback")
+                            .header("X-Internal-Token", "ea-sys-notify-dev-token")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"channelMsgId\":\"" + msgId + "\",\"tenantId\":1,\"status\":\"FAILED\",\"error\":\"回退尝试\"}"))
+                    .andExpect(status().isOk());
+        }
+        List<String> after = inTenant(() -> deliveryRecordMapper.selectList(
+                        Wrappers.<DeliveryRecord>lambdaQuery().eq(DeliveryRecord::getExecutionId, executionId)))
+                .stream().map(DeliveryRecord::getStatus).distinct().toList();
+        assertThat(after).containsExactly("DELIVERED");
 
         // 报告重查与执行一致
         mvc.perform(get("/api/workflows/executions/{id}/report", executionId).header(AUTH, bearer()))

@@ -145,7 +145,11 @@ const hasSource = computed(() => type.value !== 'END')
 </script>
 
 <template>
-  <div class="wf-node" :style="{ borderColor: meta.color, width: nodeWidth + 'px', height: nodeHeight + 'px' }">
+  <div
+    class="wf-node"
+    :class="{ 'wf-node--pending': props.data?.pendingConnect }"
+    :style="{ borderColor: meta.color, width: nodeWidth + 'px', height: nodeHeight + 'px' }"
+  >
     <Handle v-if="hasTarget" type="target" :position="Position.Left" />
     <div class="wf-node-head" :style="{ background: meta.color }">
       <span class="wf-node-type">{{ meta.label }}</span>
@@ -167,6 +171,12 @@ const hasSource = computed(() => type.value !== 'END')
   border-radius: 8px;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
   font-size: 13px;
+}
+/* 双选连线：待连源节点虚线圈出 */
+.wf-node--pending {
+  outline: 2px dashed #409eff;
+  outline-offset: 3px;
+  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.12);
 }
 .wf-node-head {
   display: flex;

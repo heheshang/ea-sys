@@ -56,7 +56,7 @@ const workflowId = computed(() => (route.params.id ? Number(route.params.id) : n
  * Vue Flow 的 Node/Edge 是联合类型且部分字段可选，精确泛型会引发深度实例化。
  * 数组保留库默认类型，业务访问统一走 cast 辅助（data 在 push/load 时总是写入）。
  */
-type CanvasNodeData = { real: WorkflowNodeSpec }
+type CanvasNodeData = { real: WorkflowNodeSpec; pendingConnect?: boolean }
 type CanvasEdgeData = { condition: ConditionRule | null }
 
 const nodes = ref<Node[]>([])
@@ -168,21 +168,65 @@ async function addFromPalette(type: WorkflowNodeType) {
     data: { real: { key, type, name: '', config: {}, position: null } },
   })
   selectNode(key)
+  // 新落画布节点不进入待连状态（用户通常先去配置）
+  pendingConnectSrc.value = null
+  syncPendingClass()
 }
 
-/* ---------- 选中 ---------- */
+/* ---------- 选中 / 双选连线 ---------- */
+
+/** 待连源节点：依次点击两个节点即可连线（点击空白取消，再点已选节点退出待连）。 */
+const pendingConnectSrc = ref<string | null>(null)
+
+const pendingConnectLabel = computed(() => {
+  if (!pendingConnectSrc.value) return ''
+  const n = liteNodes.value.find((x) => x.id === pendingConnectSrc.value)
+  return n ? nodeLabel(n) : pendingConnectSrc.value
+})
+
+/** 待连视觉标记同步到节点 data（CanvasNode 据此加高亮样式）。 */
+function syncPendingClass() {
+  for (const n of allNodes()) {
+    const d = dataOf(n)
+    const pending = pendingConnectSrc.value === n.id
+    if (!!d.pendingConnect !== pending) {
+      d.pendingConnect = pending
+      n.data = { ...d }
+    }
+  }
+}
 
 function selectNode(id: string) {
+  // 已有待连源且点击另一个节点 → 尝试连线
+  if (pendingConnectSrc.value && pendingConnectSrc.value !== id) {
+    const src = pendingConnectSrc.value
+    pendingConnectSrc.value = null
+    if (canConnect({ source: src, target: id })) {
+      pushEdge(src, id)
+    }
+    selectedKind.value = 'node'
+    selectedId.value = id
+    syncPendingClass()
+    return
+  }
+  // 再点已选中节点：退出待连；首次点击节点：进入待连
+  const reselect = id === selectedId.value && selectedKind.value === 'node'
+  pendingConnectSrc.value = reselect ? null : id
   selectedKind.value = 'node'
   selectedId.value = id
+  syncPendingClass()
 }
 function selectEdge(id: string) {
+  pendingConnectSrc.value = null
+  syncPendingClass()
   selectedKind.value = 'edge'
   selectedId.value = id
 }
 function clearSelection() {
+  pendingConnectSrc.value = null
   selectedKind.value = null
   selectedId.value = ''
+  syncPendingClass()
 }
 
 function deleteSelected() {
@@ -237,16 +281,21 @@ function canConnect(conn: Connection): boolean {
   return true
 }
 
-function onConnect(conn: Connection) {
-  if (!canConnect(conn)) return
+/** 创建一条无条件的平滑箭头边（条件 DSL 由 EdgeConditionEditor 配置）。 */
+function pushEdge(src: string, tgt: string) {
   edges.value.push({
-    id: `${conn.source}->${conn.target}`,
-    source: conn.source!,
-    target: conn.target!,
+    id: `${src}->${tgt}`,
+    source: src,
+    target: tgt,
     type: 'smoothstep',
     markerEnd: { type: MarkerType.ArrowClosed },
     data: { condition: null },
   })
+}
+
+function onConnect(conn: Connection) {
+  if (!canConnect(conn)) return
+  pushEdge(conn.source!, conn.target!)
 }
 
 /* ---------- 节点配置 ---------- */
@@ -946,6 +995,11 @@ onUnmounted(() => {
       </div>
     </div>
 
+    <!-- 双选连线提示条 -->
+    <div v-if="pendingConnectSrc" class="connect-hint">
+      已选中「{{ pendingConnectLabel }}」：再点击目标节点完成连线（点击空白取消）
+    </div>
+
     <div class="canvas-body">
       <!-- 左侧节点面板 -->
       <div class="palette">
@@ -958,7 +1012,7 @@ onUnmounted(() => {
         >
           {{ p.label }}（{{ p.type }}）
         </div>
-        <div class="palette-tip">点击添加节点；从节点右侧圆点拖出连线。</div>
+        <div class="palette-tip">点击添加节点；连线：依次点击两个节点，或从节点右侧圆点拖出。</div>
       </div>
 
       <!-- 画布 -->
@@ -1451,6 +1505,13 @@ onUnmounted(() => {
 .wf-actions {
   display: flex;
   gap: 8px;
+}
+.connect-hint {
+  padding: 6px 16px;
+  font-size: 13px;
+  color: #409eff;
+  background: #ecf5ff;
+  border-bottom: 1px solid #d9ecff;
 }
 .canvas-body {
   flex: 1;

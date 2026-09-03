@@ -75,4 +75,20 @@ public interface AgentAuditMapper extends BaseMapper<AgentAudit> {
             LIMIT #{limit}
             """)
     List<AgentAudit> selectRecent(@Param("tenantId") Long tenantId, @Param("limit") int limit);
+
+    /** 驾驶舱 LLM 追踪：按运行追踪 ID（评测报告 trace_id，审计 input_summary JSON 内嵌）过滤最近 N 条。 */
+    @InterceptorIgnore(tenantLine = "true")
+    @Select("""
+            SELECT id, tenant_id, agent_type, action, status, reason, schema_valid, strategy_version,
+                   confidence, model, tokens, duration_ms, cost, operator, created_at
+            FROM audit_log
+            WHERE tenant_id = #{tenantId}
+              AND replace(input_summary::text, ' ', '') LIKE CONCAT('%"trace_id":"',
+                  replace(replace(replace(#{trace}, '\\', '\\\\'), '%', '\\%'), '_', '\\_'),
+                  '"%') ESCAPE '\\'
+            ORDER BY created_at DESC, id DESC
+            LIMIT #{limit}
+            """)
+    List<AgentAudit> selectByTrace(@Param("tenantId") Long tenantId, @Param("trace") String trace,
+                                   @Param("limit") int limit);
 }

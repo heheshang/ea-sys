@@ -50,6 +50,12 @@ public class EvaluationReport {
     /** openjudge / execute。 */
     private String mode;
 
+    /** LLM 判分轮次 1-5（多次取均值）。 */
+    private Integer judgeRounds;
+
+    /** 运行追踪 ID（驾驶舱 LLM 调用联动）。 */
+    private String traceId;
+
     private String createdBy;
     private Instant createdAt;
     @TableLogic
@@ -149,6 +155,22 @@ public class EvaluationReport {
 
     public void setMode(String mode) {
         this.mode = mode;
+    }
+
+    public Integer getJudgeRounds() {
+        return judgeRounds;
+    }
+
+    public void setJudgeRounds(Integer judgeRounds) {
+        this.judgeRounds = judgeRounds;
+    }
+
+    public String getTraceId() {
+        return traceId;
+    }
+
+    public void setTraceId(String traceId) {
+        this.traceId = traceId;
     }
 
     public String getCreatedBy() {

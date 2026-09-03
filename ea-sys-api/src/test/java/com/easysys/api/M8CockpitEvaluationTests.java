@@ -504,6 +504,164 @@ class M8CockpitEvaluationTests {
         assertThat(metricApplicable(metricsNode, "observation_information_gain")).isEqualTo(1);
     }
 
+    // ---------- 9. 自定义评测器：rule 参数化规则确定性判分 ----------
+
+    @Test
+    void evaluationCustomRuleKeywordScoresDeterministically() throws Exception {
+        long ds = createDataset("自定义关键词规则", "openjudge");
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("name", "关键词正确性");
+        body.put("category", "rule");
+        body.put("description", "响应需包含关键词");
+        body.put("ruleType", "keyword_contains");
+        body.put("params", Map.of("keywords", java.util.List.of("正确")));
+        body.put("judgePrompt", "");
+        long ev = createCustomEvaluator(body);
+        addCase(ds, "介绍一下系统", "系统说明", "系统功能正确，运行正常");
+        addCase(ds, "介绍一下系统", "系统说明", "系统功能良好，运行正常");
+
+        Map<String, Object> run = new LinkedHashMap<>();
+        run.put("datasetId", ds);
+        run.put("evaluators", java.util.List.of("custom_" + ev));
+        JsonNode data = parse(postJson("/api/evaluations/run", asJson(run))).path("data");
+
+        // 命中 1 例 / 未命中 1 例 → 均值 0.5，适用 2 例，category=rule
+        assertThat(metricScore(data.path("metrics"), "custom_" + ev)).isCloseTo(0.5, within(0.001));
+        assertThat(metricApplicable(data.path("metrics"), "custom_" + ev)).isEqualTo(2);
+        for (JsonNode m : data.path("metrics")) {
+            if (("custom_" + ev).equals(m.path("metric").asText())) {
+                assertThat(m.path("category").asText()).isEqualTo("rule");
+            }
+        }
+    }
+
+    @Test
+    void evaluationCustomRuleRegexLengthProhibit() throws Exception {
+        long ds = createDataset("自定义规则三型", "openjudge");
+
+        Map<String, Object> kw = new LinkedHashMap<>();
+        kw.put("name", "禁词检测");
+        kw.put("category", "rule");
+        kw.put("ruleType", "keyword_contains");
+        kw.put("params", Map.of("keywords", java.util.List.of("禁止词"), "prohibit", true));
+        kw.put("judgePrompt", "");
+        long kwId = createCustomEvaluator(kw);
+
+        Map<String, Object> rx = new LinkedHashMap<>();
+        rx.put("name", "正则匹配");
+        rx.put("category", "rule");
+        rx.put("ruleType", "regex_match");
+        rx.put("params", Map.of("pattern", "禁止"));
+        rx.put("judgePrompt", "");
+        long rxId = createCustomEvaluator(rx);
+
+        Map<String, Object> len = new LinkedHashMap<>();
+        len.put("name", "长度区间");
+        len.put("category", "rule");
+        len.put("ruleType", "length_between");
+        len.put("params", Map.of("min", 2, "max", 6));
+        len.put("judgePrompt", "");
+        long lenId = createCustomEvaluator(len);
+
+        // 响应「禁止词出现」：禁词命中 → prohibit 0.0；正则 find 命中 → 1.0；长度 5 ∈ [2,6] → 1.0
+        addCase(ds, "q", null, "禁止词出现");
+
+        Map<String, Object> run = new LinkedHashMap<>();
+        run.put("datasetId", ds);
+        run.put("evaluators", java.util.List.of("custom_" + kwId, "custom_" + rxId, "custom_" + lenId));
+        JsonNode data = parse(postJson("/api/evaluations/run", asJson(run))).path("data");
+
+        assertThat(metricScore(data.path("metrics"), "custom_" + kwId)).isCloseTo(0.0, within(0.001));
+        assertThat(metricScore(data.path("metrics"), "custom_" + rxId)).isCloseTo(1.0, within(0.001));
+        assertThat(metricScore(data.path("metrics"), "custom_" + lenId)).isCloseTo(1.0, within(0.001));
+    }
+
+    // ---------- 10. 自定义 LLM-Judge：LLM 停用时降级为不适用（INFO）----------
+
+    @Test
+    void evaluationCustomLlmJudgeFallsBackWhenLlmDisabled() throws Exception {
+        long ds = createDataset("自定义 LLM 判分", "openjudge");
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("name", "自定判分");
+        body.put("category", "llm_judge");
+        body.put("description", "LLM-Judge 实际停用降级");
+        body.put("ruleType", "");
+        body.put("params", null);
+        body.put("judgePrompt", "请判断：\n问题：{question}\n响应：{response}\n参考：{reference}\n输出 0-100");
+        long ev = createCustomEvaluator(body);
+        addCase(ds, "q", "参考答案", "实际响应");
+
+        Map<String, Object> run = new LinkedHashMap<>();
+        run.put("datasetId", ds);
+        run.put("judgeRounds", 3);
+        run.put("evaluators", java.util.List.of("custom_" + ev));
+        JsonNode data = parse(postJson("/api/evaluations/run", asJson(run))).path("data");
+
+        // LLM 停用 → 真实分未注入，无内置近似 → 不适用：metrics 不含、INFO 发现列出
+        assertThat(metricApplicable(data.path("metrics"), "custom_" + ev)).isEqualTo(-1);
+        boolean info = false;
+        for (JsonNode f : data.path("findings")) {
+            if ("INFO".equals(f.path("level").asText())
+                    && ("custom_" + ev).equals(f.path("dimension").asText())) {
+                info = true;
+            }
+        }
+        assertThat(info).isTrue();
+        // 报告带判分轮次（多次取均值语义）与追踪 ID
+        assertThat(data.path("judgeRounds").asInt()).isEqualTo(3);
+    }
+
+    // ---------- 11. jsonl 导入（坏行跳过）+ 报告判分轮次/TraceID + 驾驶舱联动 ----------
+
+    @Test
+    void evaluationImportJsonlAndTraceLinking() throws Exception {
+        long ds = createDataset("批量导入", "openjudge");
+        String jsonl = "{\"question\":\"q1\",\"reference\":\"r1\",\"response\":\"a1\",\"system_prompt\":\"s1\"}\n"
+                + "{\"question\":\"q2\",\"reference\":\"r2\",\"response\":\"a2\"}\n"
+                + "{\"question\":\"q3\",\"response\":\"a3\"}\n"
+                + "{bad json\n"
+                + "{\"response\":\"缺 question\"}\n"
+                + "\n";
+        String body = mvc.perform(post("/api/evaluations/datasets/" + ds + "/import")
+                        .contentType(MediaType.TEXT_PLAIN).content(jsonl)
+                        .header(AUTH, bearer()))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        JsonNode result = parse(body).path("data");
+        assertThat(result.path("imported").asInt()).isEqualTo(3);
+        assertThat(result.path("skipped").asInt()).isEqualTo(2);
+        // 坏行行号（从 1 计）：第 4 行 JSON 失败、第 5 行缺 question
+        java.util.List<Integer> lines = new java.util.ArrayList<>();
+        for (JsonNode e : result.path("errors")) {
+            lines.add(e.path("line").asInt());
+        }
+        assertThat(lines).containsExactlyInAnyOrder(4, 5);
+        JsonNode cases = parse(getJson("/api/evaluations/datasets/" + ds + "/cases")).path("data");
+        assertThat(cases.size()).isEqualTo(3);
+        // 字段映射：reference → expected_output、response → provided_response、system_prompt → system_prompt
+        assertThat(cases.get(0).path("systemPrompt").asText()).isEqualTo("s1");
+        assertThat(cases.get(0).path("expectedOutput").asText()).isEqualTo("r1");
+        assertThat(cases.get(0).path("providedResponse").asText()).isEqualTo("a1");
+        assertThat(cases.get(1).path("providedResponse").asText()).isEqualTo("a2");
+
+        // 判分轮次 + TraceID：judgeRounds=2 → 报告返回 2，traceId = eval-xxx
+        Map<String, Object> run = new LinkedHashMap<>();
+        run.put("datasetId", ds);
+        run.put("judgeRounds", 2);
+        run.put("evaluators", java.util.List.of("string_exact"));
+        JsonNode data = parse(postJson("/api/evaluations/run", asJson(run))).path("data");
+        assertThat(data.path("judgeRounds").asInt()).isEqualTo(2);
+        String traceId = data.path("traceId").asText();
+        assertThat(traceId).startsWith("eval-");
+        assertThat(traceId.length()).isEqualTo(13); // eval- + 8 位
+
+        // 驾驶舱联动：按 trace 过滤 LLM 调用追踪，命中本次评测运行审计
+        JsonNode traces = parse(getJson("/api/cockpit/llm-traces?limit=20&trace=" + traceId)).path("data");
+        assertThat(traces.size()).isEqualTo(1);
+        assertThat(traces.get(0).path("agentType").asText()).isEqualTo("EVALUATION");
+        assertThat(traces.get(0).path("status").asText()).isEqualTo("SUCCESS");
+    }
+
     // ---------- helpers ----------
 
     private long createGraphEntry(String module, String entryKey, String name) throws Exception {
@@ -514,6 +672,11 @@ class M8CockpitEvaluationTests {
         m.put("status", "ENABLED");
         String body = postJson("/api/cockpit/graph", asJson(m));
         return Long.parseLong(JsonPath.read(body, "$.data.id").toString());
+    }
+
+    private long createCustomEvaluator(Map<String, Object> body) throws Exception {
+        String resp = postJson("/api/evaluations/custom-evaluators", asJson(body));
+        return Long.parseLong(JsonPath.read(resp, "$.data.id").toString());
     }
 
     private long createDataset(String name, String mode) throws Exception {

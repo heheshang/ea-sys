@@ -84,9 +84,10 @@ public class CockpitController {
         return ApiResponse.ok(cockpitService.insights(force, username));
     }
 
-    /** LLM 调用追踪：最近 limit 条（默认 20，上限 100）。 */
+    /** LLM 调用追踪：最近 limit 条（默认 20，上限 100）；trace 非空按评测运行追踪 ID 过滤联动。 */
     @GetMapping("/llm-traces")
-    public ApiResponse<List<LlmTraceView>> llmTraces(@RequestParam(defaultValue = "20") int limit) {
-        return ApiResponse.ok(cockpitService.llmTraces(limit));
+    public ApiResponse<List<LlmTraceView>> llmTraces(@RequestParam(defaultValue = "20") int limit,
+                                                     @RequestParam(required = false) String trace) {
+        return ApiResponse.ok(cockpitService.llmTraces(limit, trace));
     }
 }

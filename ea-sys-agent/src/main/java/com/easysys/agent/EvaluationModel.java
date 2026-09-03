@@ -6,7 +6,9 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -29,6 +31,24 @@ import java.util.regex.Pattern;
  *       （文本相似度/未见内容占比等），保证结果可断言；LLM 启用后由 harness 主链路
  *       （真实模型评估）承接，本类近似分支保留但不作为测试覆盖路径。</li>
  * </ul>
+ *
+ * <p>自定义评测器（此刻起评测服务中心支持，不引 Python）：
+ * <ul>
+ *   <li>规则评测器（category=rule）：Java 参数化三型 —— keyword_contains（关键词包含，
+ *       可配 all 全含/prohibit 禁含）、regex_match（正则匹配 find）、length_between（长度
+ *       区间）。逐用例确定性判分，纯本地无网络。</li>
+ *   <li>LLM-Judge（category=llm_judge）：judge_prompt 提示词模板可配；真实判分由
+ *       EvaluationService 在 LLM 启用时逐 case 调模型打分（0-100）注入
+ *       {@code cases[].judge_scores.{metric}}，本类优先消费该真实分；模型未启用或判分
+ *       失败未注入时，按内置近似（文本相似度等）降级，保证结果可断言。</li>
+ * </ul>
+ * 自定义评测器由 {@code input.custom_evaluators} 携带原始定义：
+ * <pre>
+ * "custom_evaluators": [{"metric": "custom_1", "category": "rule",
+ *                        "rule_type": "keyword_contains", "params": {"keywords": [...]}},
+ *                       {"metric": "custom_2", "category": "llm_judge", "judge_prompt": "..."}]
+ * </pre>
+ * 指标名 = custom_{id}，evaluators 选中项引用同名 metric。
  *
  * <p>入参（EvaluationService 组装）：
  * <pre>
@@ -75,6 +95,10 @@ public final class EvaluationModel implements StrategyAgent, AgentFallback {
     /** 全部 15 个内置评测器。 */
     public static final List<String> ALL_METRICS = concat(RULE_METRICS, LLM_JUDGE_METRICS);
 
+    /** 自定义评测器定义（input.custom_evaluators 注入，指标名 custom_{id}）。 */
+    private record CustomSpec(String metric, String category, String ruleType, JsonNode params) {
+    }
+
     private static List<String> concat(List<String> a, List<String> b) {
         List<String> all = new ArrayList<>(a);
         all.addAll(b);
@@ -108,7 +132,20 @@ public final class EvaluationModel implements StrategyAgent, AgentFallback {
         ArrayNode cases = input == null ? MAPPER.createArrayNode() : (ArrayNode) input.path("cases");
         ArrayNode evaluators = input == null ? MAPPER.createArrayNode() : (ArrayNode) input.path("evaluators");
 
-        // 选中的评测器（缺省 = 全量 11 个）
+        // 自定义评测器定义（rule 参数化规则 / llm_judge 提示词），放行白名单
+        Map<String, CustomSpec> customSpecs = new HashMap<>();
+        if (input != null && input.path("custom_evaluators").isArray()) {
+            for (JsonNode ce : input.path("custom_evaluators")) {
+                String metric = ce.path("metric").asText("");
+                if (metric.isEmpty()) {
+                    continue;
+                }
+                customSpecs.put(metric, new CustomSpec(metric, ce.path("category").asText("rule"),
+                        ce.path("rule_type").asText(null), ce.path("params")));
+            }
+        }
+
+        // 选中的评测器（缺省 = 全量 15 个内置；自定义评测器需显式选择）
         List<EvaluatorSpec> selected = new ArrayList<>();
         if (evaluators == null || evaluators.isEmpty()) {
             for (String m : ALL_METRICS) {
@@ -117,10 +154,10 @@ public final class EvaluationModel implements StrategyAgent, AgentFallback {
         } else {
             for (JsonNode ev : evaluators) {
                 String metric = ev.path("metric").asText("");
-                if (!ALL_METRICS.contains(metric)) {
+                if (!ALL_METRICS.contains(metric) && !customSpecs.containsKey(metric)) {
                     continue;
                 }
-                selected.add(new EvaluatorSpec(metric, categoryOf(metric)));
+                selected.add(new EvaluatorSpec(metric, categoryOf(metric, customSpecs)));
             }
         }
 
@@ -129,7 +166,7 @@ public final class EvaluationModel implements StrategyAgent, AgentFallback {
             List<Double> scores = new ArrayList<>();
             int applicable = 0;
             for (JsonNode c : cases) {
-                Double s = score(spec.metric, c);
+                Double s = score(spec.metric, c, customSpecs);
                 if (s != null) {
                     scores.add(s);
                     applicable++;
@@ -214,8 +251,33 @@ public final class EvaluationModel implements StrategyAgent, AgentFallback {
         return RULE_METRICS.contains(metric) ? "rule" : "llm_judge";
     }
 
+    /** 分类：自定义评测器取自定义定义，内置按 rule/llm_judge 常量目录。 */
+    private static String categoryOf(String metric, Map<String, CustomSpec> customSpecs) {
+        CustomSpec spec = customSpecs.get(metric);
+        if (spec != null) {
+            return spec.category();
+        }
+        return categoryOf(metric);
+    }
+
     /** 单用例单评测器打分；返回 null 表示不适用（缺基准/缺响应）。 */
     static Double score(String metric, JsonNode c) {
+        return score(metric, c, Map.of());
+    }
+
+    /** 单用例单评测器打分（含自定义评测器定义）；返回 null 表示不适用（缺基准/缺响应）。 */
+    static Double score(String metric, JsonNode c, Map<String, CustomSpec> customSpecs) {
+        // LLM 真实判分优先：EvaluationService 在 LLM 启用时逐 case 注入 judge_scores.{metric}（0-100）
+        if (c.path("judge_scores").isObject() && c.path("judge_scores").path(metric).isNumber()) {
+            double raw = c.path("judge_scores").path(metric).asDouble();
+            if (raw >= 0 && raw <= 100) {
+                return raw / 100.0;
+            }
+        }
+        CustomSpec custom = customSpecs.get(metric);
+        if (custom != null && "rule".equals(custom.category())) {
+            return customRuleScore(custom.ruleType(), custom.params(), c);
+        }
         String actual = text(c.path("actual_response"));
         if (actual.isEmpty()) {
             return null;
@@ -257,8 +319,57 @@ public final class EvaluationModel implements StrategyAgent, AgentFallback {
             case "llm_response_completeness":
                 return completeness(expected, actual);
             default:
+                // 自定义 LLM-Judge：真实分（0-100）已在上方优先消费；未注入表示 LLM 停用或判分失败，
+                // 无内置近似算法 → 判不适用（INFO 发现），不产生误导性分数
                 return null;
         }
+    }
+
+    /** 自定义规则评测器：三种 Java 参数化规则，确定性无网络；参数缺失/非法返回 null（判为不适用）。 */
+    private static Double customRuleScore(String ruleType, JsonNode params, JsonNode c) {
+        String actual = text(c.path("actual_response"));
+        if (actual.isEmpty() || params == null || !params.isObject()) {
+            return null;
+        }
+        if ("keyword_contains".equals(ruleType)) {
+            JsonNode keywords = params.path("keywords");
+            if (!keywords.isArray() || keywords.isEmpty()) {
+                return null;
+            }
+            boolean prohibit = params.path("prohibit").asBoolean(false);
+            boolean all = params.path("all").asBoolean(false);
+            int hits = 0;
+            for (JsonNode k : keywords) {
+                if (k.isTextual() && !k.asText().isEmpty() && actual.contains(k.asText())) {
+                    hits++;
+                }
+            }
+            if (prohibit) {
+                return hits == 0 ? 1.0 : 0.0;
+            }
+            return all ? (hits == keywords.size() ? 1.0 : 0.0) : (hits > 0 ? 1.0 : 0.0);
+        }
+        if ("regex_match".equals(ruleType)) {
+            String pattern = params.path("pattern").asText("");
+            if (pattern.isEmpty()) {
+                return null;
+            }
+            try {
+                return Pattern.compile(pattern).matcher(actual).find() ? 1.0 : 0.0;
+            } catch (Exception e) {
+                return null;
+            }
+        }
+        if ("length_between".equals(ruleType)) {
+            JsonNode minNode = params.path("min");
+            JsonNode maxNode = params.path("max");
+            if (!minNode.isNumber() || !maxNode.isNumber()) {
+                return null;
+            }
+            int len = actual.length();
+            return len >= minNode.asInt() && len <= maxNode.asInt() ? 1.0 : 0.0;
+        }
+        return null;
     }
 
     /** number_accuracy：期望/实际数字集合命中率；期望无数字 → 不适用。 */

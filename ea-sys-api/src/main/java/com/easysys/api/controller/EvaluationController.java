@@ -1,8 +1,10 @@
 package com.easysys.api.controller;
 
 import com.easysys.api.dto.evaluation.CaseView;
+import com.easysys.api.dto.evaluation.CustomEvaluatorView;
 import com.easysys.api.dto.evaluation.DatasetView;
 import com.easysys.api.dto.evaluation.EvaluationRunRequest;
+import com.easysys.api.dto.evaluation.ImportResultView;
 import com.easysys.api.dto.evaluation.ReportView;
 import com.easysys.api.service.EvaluationService;
 import com.easysys.common.web.ApiResponse;
@@ -72,6 +74,14 @@ public class EvaluationController {
         return ApiResponse.ok(evaluationService.addCase(datasetId, req, username));
     }
 
+    /** 数据集 jsonl 批量导入（body 为逐行 JSON 或整体 JSON 数组；坏行跳过返回明细）。 */
+    @PostMapping("/datasets/{id}/import")
+    public ApiResponse<ImportResultView> importCases(@PathVariable("id") Long datasetId,
+                                                     @RequestBody String content,
+                                                     @RequestAttribute String username) {
+        return ApiResponse.ok(evaluationService.importCases(datasetId, content, username));
+    }
+
     @PutMapping("/cases/{id}")
     public ApiResponse<CaseView> updateCase(@PathVariable Long id,
                                             @Valid @RequestBody CaseView.SaveRequest req,
@@ -107,6 +117,34 @@ public class EvaluationController {
     @DeleteMapping("/reports/{id}")
     public ApiResponse<Void> deleteReport(@PathVariable Long id, @RequestAttribute String username) {
         evaluationService.deleteReport(id);
+        return ApiResponse.ok(null);
+    }
+
+    // ---------- 自定义评测器 ----------
+
+    @GetMapping("/custom-evaluators")
+    public ApiResponse<List<CustomEvaluatorView>> customEvaluators() {
+        return ApiResponse.ok(evaluationService.listCustomEvaluators());
+    }
+
+    @PostMapping("/custom-evaluators")
+    public ApiResponse<CustomEvaluatorView> createCustomEvaluator(
+            @Valid @RequestBody CustomEvaluatorView.SaveRequest req,
+            @RequestAttribute String username) {
+        return ApiResponse.ok(evaluationService.createCustomEvaluator(req, username));
+    }
+
+    @PutMapping("/custom-evaluators/{id}")
+    public ApiResponse<CustomEvaluatorView> updateCustomEvaluator(
+            @PathVariable Long id, @Valid @RequestBody CustomEvaluatorView.SaveRequest req,
+            @RequestAttribute String username) {
+        return ApiResponse.ok(evaluationService.updateCustomEvaluator(id, req, username));
+    }
+
+    @DeleteMapping("/custom-evaluators/{id}")
+    public ApiResponse<Void> deleteCustomEvaluator(@PathVariable Long id,
+                                                   @RequestAttribute String username) {
+        evaluationService.deleteCustomEvaluator(id);
         return ApiResponse.ok(null);
     }
 }

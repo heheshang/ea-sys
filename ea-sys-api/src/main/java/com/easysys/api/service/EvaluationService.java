@@ -7,15 +7,19 @@ import com.easysys.agent.AgentRunConfig;
 import com.easysys.agent.EvaluationModel;
 import com.easysys.api.config.AgentLlmProperties;
 import com.easysys.api.dto.evaluation.CaseView;
+import com.easysys.api.dto.evaluation.CustomEvaluatorView;
 import com.easysys.api.dto.evaluation.DatasetView;
 import com.easysys.api.dto.evaluation.EvaluationRunRequest;
+import com.easysys.api.dto.evaluation.ImportResultView;
 import com.easysys.api.dto.evaluation.ReportView;
 import com.easysys.api.entity.AgentAudit;
 import com.easysys.api.entity.EvaluationCase;
+import com.easysys.api.entity.EvaluationCustomEvaluator;
 import com.easysys.api.entity.EvaluationDataset;
 import com.easysys.api.entity.EvaluationReport;
 import com.easysys.api.mapper.AgentAuditMapper;
 import com.easysys.api.mapper.EvaluationCaseMapper;
+import com.easysys.api.mapper.EvaluationCustomEvaluatorMapper;
 import com.easysys.api.mapper.EvaluationDatasetMapper;
 import com.easysys.api.mapper.EvaluationReportMapper;
 import com.easysys.common.tenant.TenantContext;
@@ -43,7 +47,9 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -65,6 +71,8 @@ public class EvaluationService {
     private final EvaluationCaseMapper caseMapper;
     private final EvaluationReportMapper reportMapper;
     private final AgentAuditMapper auditMapper;
+    private final EvaluationCustomEvaluatorMapper customEvaluatorMapper;
+    private final LlmJudgeScorer judgeScorer;
     private final HarnessAgent evaluationAgent;
     private final HarnessAgent assistantAgent;
     private final HarnessAgent workflowDialogueAgent;
@@ -73,6 +81,8 @@ public class EvaluationService {
 
     public EvaluationService(EvaluationDatasetMapper datasetMapper, EvaluationCaseMapper caseMapper,
                              EvaluationReportMapper reportMapper, AgentAuditMapper auditMapper,
+                             EvaluationCustomEvaluatorMapper customEvaluatorMapper,
+                             LlmJudgeScorer judgeScorer,
                              HarnessAgent evaluationAgent,
                              @Qualifier("assistantAgent") HarnessAgent assistantAgent,
                              @Qualifier("workflowDialogueAgent") HarnessAgent workflowDialogueAgent,
@@ -81,6 +91,8 @@ public class EvaluationService {
         this.caseMapper = caseMapper;
         this.reportMapper = reportMapper;
         this.auditMapper = auditMapper;
+        this.customEvaluatorMapper = customEvaluatorMapper;
+        this.judgeScorer = judgeScorer;
         this.evaluationAgent = evaluationAgent;
         this.assistantAgent = assistantAgent;
         this.workflowDialogueAgent = workflowDialogueAgent;
@@ -231,6 +243,102 @@ public class EvaluationService {
         caseMapper.deleteById(c.getId());
     }
 
+    /**
+     * jsonl 数据集导入：body 为逐行 JSON 对象（jsonl）或整体 JSON 数组。
+     * 字段映射：question（必填）→ 用例提问；reference → 期望输出（expected_output）；
+     * response → 预置响应（provided_response）；system_prompt → 系统提示词；meta 忽略。
+     * 坏行/缺 question 行记入 errors（行号从 1 计）并跳过，不整批失败。
+     */
+    @Transactional
+    public ImportResultView importCases(Long datasetId, String content, String operator) {
+        Long tenantId = TenantContext.require();
+        requireDataset(datasetId, tenantId);
+        if (content == null || content.isBlank()) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "导入内容为空");
+        }
+        List<ImportResultView.LineError> errors = new ArrayList<>();
+        int imported = 0;
+        int skipped = 0;
+        int maxSeq = nextSeq(datasetId) - 1;
+
+        // 解析：JSON 数组整体 / jsonl 逐行（物理行号记入错误）
+        List<Object[]> rows = new ArrayList<>(); // [行号, JsonNode]
+        String trimmed = content.trim();
+        try {
+            if (trimmed.startsWith("[")) {
+                JsonNode arr = json.readTree(trimmed);
+                if (!arr.isArray()) {
+                    throw new BizException(ErrorCode.BAD_REQUEST, "导入内容 JSON 数组非法");
+                }
+                int line = 1;
+                for (JsonNode row : arr) {
+                    rows.add(new Object[]{line++, row});
+                }
+            } else {
+                String[] lines = trimmed.split("\\R");
+                for (int i = 0; i < lines.length; i++) {
+                    String line = lines[i].trim();
+                    if (line.isEmpty()) {
+                        continue;
+                    }
+                    try {
+                        rows.add(new Object[]{i + 1, json.readTree(line)});
+                    } catch (Exception e) {
+                        errors.add(new ImportResultView.LineError(i + 1, "JSON 解析失败: " + e.getMessage()));
+                        skipped++;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            errors.add(new ImportResultView.LineError(1, "整体解析失败（jsonl 逐行或 JSON 数组）: " + e.getMessage()));
+            skipped++;
+        }
+
+        for (Object[] row : rows) {
+            int lineNo = (Integer) row[0];
+            JsonNode node = (JsonNode) row[1];
+            if (node == null || !node.isObject()) {
+                errors.add(new ImportResultView.LineError(lineNo, "该行不是 JSON 对象"));
+                skipped++;
+                continue;
+            }
+            String question = node.path("question").isValueNode() ? node.path("question").asText("") : "";
+            if (question.isBlank()) {
+                errors.add(new ImportResultView.LineError(lineNo, "缺少必填字段 question"));
+                skipped++;
+                continue;
+            }
+            try {
+                EvaluationCase c = new EvaluationCase();
+                c.setTenantId(tenantId);
+                c.setDatasetId(datasetId);
+                c.setSeq(maxSeq + 1);
+                maxSeq = c.getSeq();
+                c.setQuestion(question);
+                c.setSystemPrompt(textOrNull(node.path("system_prompt")));
+                c.setExpectedOutput(jsonOrNull(node.get("reference")));
+                c.setExpectedSteps(1);
+                c.setProvidedResponse(textOrNull(node.path("response")));
+                c.setCreatedAt(Instant.now());
+                caseMapper.insert(c);
+                imported++;
+            } catch (Exception e) {
+                errors.add(new ImportResultView.LineError(lineNo, "写入失败: " + e.getMessage()));
+                skipped++;
+            }
+        }
+        log.info("评测数据集 {} 导入完成：成功 {} 行，跳过 {} 行（含 {} 条错误明细）",
+                datasetId, imported, skipped, errors.size());
+        return new ImportResultView(imported, skipped, errors);
+    }
+
+    private static String textOrNull(JsonNode n) {
+        if (n == null || n.isNull()) {
+            return null;
+        }
+        return n.asText();
+    }
+
     // ---------- 批量运行 ----------
 
     /**
@@ -262,10 +370,37 @@ public class EvaluationService {
         ReActAgent subject = "execute".equals(d.getMode())
                 ? subjectDelegate(d.getAgentType()) : null;
 
+        // 判分轮次（1-5 多次取均值）+ 运行追踪 ID（驾驶舱 LLM 调用联动）
+        int judgeRounds = req.judgeRounds() == null ? 1 : Math.max(1, Math.min(req.judgeRounds(), 5));
+        String traceId = "eval-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+
+        // 租户自定义评测器（逻辑删除由 MyBatis-Plus 自动过滤）
+        Map<Long, EvaluationCustomEvaluator> customsById = new HashMap<>();
+        for (EvaluationCustomEvaluator ce : customEvaluatorMapper.selectList(
+                new LambdaQueryWrapper<EvaluationCustomEvaluator>()
+                        .eq(EvaluationCustomEvaluator::getTenantId, tenantId))) {
+            customsById.put(ce.getId(), ce);
+        }
+
         ObjectNode input = json.createObjectNode();
         input.put("scope", d.getScope());
         input.put("mode", d.getMode());
         input.put("llm_enabled", llm.isEnabled());
+        input.put("trace_id", traceId);
+        input.put("judge_rounds", judgeRounds);
+        ArrayNode customArr = input.putArray("custom_evaluators");
+        for (EvaluationCustomEvaluator ce : customsById.values()) {
+            ObjectNode e = customArr.addObject();
+            e.put("metric", ce.metric());
+            e.put("category", ce.getCategory());
+            if ("rule".equals(ce.getCategory())) {
+                e.put("rule_type", ce.getRuleType());
+                JsonNode params = parse(ce.getParams());
+                if (params != null) {
+                    e.set("params", params);
+                }
+            }
+        }
         ArrayNode caseArr = input.putArray("cases");
         for (EvaluationCase c : cases) {
             ObjectNode n = caseArr.addObject();
@@ -283,19 +418,25 @@ public class EvaluationService {
                 n.put("provided_response", c.getProvidedResponse());
                 n.put("actual_response", c.getProvidedResponse()); // openjudge：预置响应直接判分
             } else if ("execute".equals(d.getMode())) {
-                executeSubject(n, subject, tenantId, operator, c); // execute：真实运行被测智能体
+                executeSubject(n, subject, tenantId, operator, c, traceId); // execute：真实运行被测智能体
             }
         }
         ArrayNode evals = input.putArray("evaluators");
         if (req.evaluators() != null && !req.evaluators().isEmpty()) {
             for (String metric : req.evaluators()) {
-                if (EvaluationModel.ALL_METRICS.contains(metric)) {
+                EvaluationCustomEvaluator custom = customsById.get(customIdOf(metric));
+                if (EvaluationModel.ALL_METRICS.contains(metric) || custom != null) {
                     ObjectNode e = evals.addObject();
                     e.put("metric", metric);
-                    e.put("category", EvaluationModel.RULE_METRICS.contains(metric) ? "rule" : "llm_judge");
+                    e.put("category", custom != null ? custom.getCategory()
+                            : (EvaluationModel.RULE_METRICS.contains(metric) ? "rule" : "llm_judge"));
                 }
             }
         }
+
+        // LLM 启用时对选中 LLM-Judge 评测器逐 case 真实打分（0-100）注入 judge_scores；
+        // 停用/失败/无 apiKey → 不注入，EvaluationModel 走确定性近似降级（不整轮失败）
+        injectJudgeScores(input, req.evaluators(), judgeRounds, tenantId, traceId, customsById);
 
         EvaluationModel planner = new EvaluationModel();
         AgentOutcome outcome = AgentPolicy.run(evaluationAgent, planner, planner,
@@ -319,6 +460,8 @@ public class EvaluationService {
                 ? 1.0 : outcome.audit().confidence()));
         r.setModel(outcome.audit().model() == null ? "deterministic" : outcome.audit().model());
         r.setMode(d.getMode());
+        r.setJudgeRounds(judgeRounds);
+        r.setTraceId(traceId);
         r.setCreatedBy(operator);
         r.setCreatedAt(Instant.now());
         reportMapper.insert(r);
@@ -394,12 +537,12 @@ public class EvaluationService {
      * （判分器视为不适用，产出 INFO 发现，不中断整轮）。
      */
     private void executeSubject(ObjectNode n, ReActAgent subject, Long tenantId, String operator,
-                                EvaluationCase c) {
+                                EvaluationCase c, String traceId) {
         if (subject == null) {
             throw new BizException(ErrorCode.BAD_REQUEST, "未知被测智能体 execute 目标");
         }
         String userId = String.valueOf(tenantId);
-        String sessionId = "eval-exec-" + c.getDatasetId() + "-" + c.getSeq() + "-" + UUID.randomUUID();
+        String sessionId = traceId + "-" + c.getSeq(); // 会话 ID = 运行追踪 ID + 用例序号（驾驶舱按 trace 联动）
         RuntimeContext ctx = RuntimeContext.builder()
                 .userId(userId)
                 .sessionId(sessionId)
@@ -443,6 +586,69 @@ public class EvaluationService {
             log.warn("评测 execute 用例 seq={} 执行失败（{}），判分跳过（不适用）", c.getSeq(),
                     e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
         }
+    }
+
+    /**
+     * LLM 真实判分注入：对选中（缺省 = 全量内置）LLM-Judge 评测器逐 case 调 Judge 模型打分
+     * （0-100，judgeRounds 次取均值）写入 cases[].judge_scores.{metric}。判分失败/停用不注入，
+     * EvaluationModel 走确定性近似降级；rule 类（内置 + 自定义）不参与。
+     */
+    private void injectJudgeScores(ObjectNode input, List<String> metrics, int rounds, Long tenantId,
+                                   String traceId, Map<Long, EvaluationCustomEvaluator> customsById) {
+        if (rounds <= 0) {
+            return;
+        }
+        if (metrics == null || metrics.isEmpty()) {
+            metrics = EvaluationModel.ALL_METRICS;
+        }
+        ArrayNode caseArr = (ArrayNode) input.path("cases");
+        for (JsonNode cn : caseArr) {
+            if (text(cn.path("actual_response")).isEmpty()) {
+                continue; // 与 EvaluationModel 判空口径一致：无实际响应不判分
+            }
+            ObjectNode judgeScores = cn.path("judge_scores").isObject()
+                    ? (ObjectNode) cn.path("judge_scores") : null;
+            for (String metric : metrics) {
+                if (EvaluationModel.RULE_METRICS.contains(metric)) {
+                    continue; // 规则类评测器确定性判分，不走 LLM
+                }
+                EvaluationCustomEvaluator custom = customsById.get(customIdOf(metric));
+                if (custom != null && !"llm_judge".equals(custom.getCategory())) {
+                    continue; // rule 类自定义评测器同规则判分
+                }
+                String prompt = custom != null ? custom.getJudgePrompt()
+                        : LlmJudgeScorer.defaultPrompt(metric);
+                Double s = judgeScorer.score(metric, prompt,
+                        text(cn.path("question")), text(cn.path("actual_response")),
+                        text(cn.path("expected_output")), rounds, tenantId, traceId);
+                if (s != null) {
+                    if (judgeScores == null) {
+                        judgeScores = ((ObjectNode) cn).putObject("judge_scores");
+                    }
+                    judgeScores.put(metric, Math.round(s));
+                }
+            }
+        }
+    }
+
+    /** 指标名 custom_{id} → 自定义评测器 id；非 custom / 非法返回 null。 */
+    private static Long customIdOf(String metric) {
+        if (metric == null || !metric.startsWith("custom_")) {
+            return null;
+        }
+        try {
+            return Long.parseLong(metric.substring("custom_".length()));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** JSON 节点文本（对象/数组取序列化文本；仅判空给注入循环用）。 */
+    private static String text(JsonNode n) {
+        if (n == null || n.isNull()) {
+            return "";
+        }
+        return n.isTextual() ? n.asText() : n.toString();
     }
 
     private void validateDataset(DatasetView.SaveRequest req) {
@@ -543,9 +749,108 @@ public class EvaluationService {
                 c.getProvidedResponse(), c.getCreatedAt());
     }
 
+    // ---------- 自定义评测器 ----------
+
+    public List<CustomEvaluatorView> listCustomEvaluators() {
+        Long tenantId = TenantContext.require();
+        return customEvaluatorMapper.selectList(new LambdaQueryWrapper<EvaluationCustomEvaluator>()
+                        .eq(EvaluationCustomEvaluator::getTenantId, tenantId)
+                        .orderByAsc(EvaluationCustomEvaluator::getId))
+                .stream().map(this::toCustomView).toList();
+    }
+
+    @Transactional
+    public CustomEvaluatorView createCustomEvaluator(CustomEvaluatorView.SaveRequest req, String operator) {
+        Long tenantId = TenantContext.require();
+        validateCustom(req);
+        EvaluationCustomEvaluator e = new EvaluationCustomEvaluator();
+        e.setTenantId(tenantId);
+        e.setName(req.name().trim());
+        e.setCategory(req.category());
+        e.setDescription(req.description());
+        e.setRuleType("rule".equals(req.category()) ? req.ruleType() : null);
+        e.setParams("rule".equals(req.category()) ? jsonOrNull(req.params()) : null);
+        e.setJudgePrompt("llm_judge".equals(req.category()) ? req.judgePrompt() : null);
+        e.setStatus(req.status() == null || req.status().isBlank()
+                ? "ENABLED" : req.status().trim().toUpperCase());
+        if (!"ENABLED".equals(e.getStatus()) && !"DISABLED".equals(e.getStatus())) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "非法状态（ENABLED/DISABLED）: " + req.status());
+        }
+        e.setCreatedBy(operator);
+        e.setCreatedAt(Instant.now());
+        e.setUpdatedAt(Instant.now());
+        customEvaluatorMapper.insert(e);
+        return toCustomView(e);
+    }
+
+    @Transactional
+    public CustomEvaluatorView updateCustomEvaluator(Long id, CustomEvaluatorView.SaveRequest req, String operator) {
+        Long tenantId = TenantContext.require();
+        EvaluationCustomEvaluator e = requireCustom(id, tenantId);
+        validateCustom(req);
+        e.setName(req.name().trim());
+        e.setCategory(req.category());
+        e.setDescription(req.description());
+        e.setRuleType("rule".equals(req.category()) ? req.ruleType() : null);
+        e.setParams("rule".equals(req.category()) ? jsonOrNull(req.params()) : null);
+        e.setJudgePrompt("llm_judge".equals(req.category()) ? req.judgePrompt() : null);
+        e.setStatus(req.status() == null || req.status().isBlank()
+                ? "ENABLED" : req.status().trim().toUpperCase());
+        if (!"ENABLED".equals(e.getStatus()) && !"DISABLED".equals(e.getStatus())) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "非法状态（ENABLED/DISABLED）: " + req.status());
+        }
+        e.setUpdatedAt(Instant.now());
+        customEvaluatorMapper.updateById(e);
+        return toCustomView(e);
+    }
+
+    @Transactional
+    public void deleteCustomEvaluator(Long id) {
+        Long tenantId = TenantContext.require();
+        requireCustom(id, tenantId);
+        customEvaluatorMapper.deleteById(id);
+    }
+
+    private EvaluationCustomEvaluator requireCustom(Long id, Long tenantId) {
+        EvaluationCustomEvaluator e = customEvaluatorMapper.selectById(id);
+        if (e == null || !tenantId.equals(e.getTenantId())) {
+            throw new BizException(ErrorCode.NOT_FOUND, "自定义评测器不存在: " + id);
+        }
+        return e;
+    }
+
+    /** 自定义评测器校验：rule 类必须 rule_type + params；llm_judge 类必须 judge_prompt。 */
+    private void validateCustom(CustomEvaluatorView.SaveRequest req) {
+        if (req.name() == null || req.name().isBlank()) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "评测器名称不能为空");
+        }
+        if (!"rule".equals(req.category()) && !"llm_judge".equals(req.category())) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "非法类别（rule/llm_judge）: " + req.category());
+        }
+        if ("rule".equals(req.category())) {
+            if (req.ruleType() == null || req.ruleType().isBlank() || !List.of(
+                    "keyword_contains", "regex_match", "length_between").contains(req.ruleType())) {
+                throw new BizException(ErrorCode.BAD_REQUEST,
+                        "规则评测器必须指定合法 rule_type（keyword_contains/regex_match/length_between）");
+            }
+            if (req.params() == null || req.params().isNull()) {
+                throw new BizException(ErrorCode.BAD_REQUEST, "规则评测器必须提供规则参数 params");
+            }
+        } else if (req.judgePrompt() == null || req.judgePrompt().isBlank()) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "LLM-Judge 必须提供 judge_prompt 提示词");
+        }
+    }
+
+    private CustomEvaluatorView toCustomView(EvaluationCustomEvaluator e) {
+        return new CustomEvaluatorView(e.getId(), e.metric(), e.getName(), e.getCategory(), e.getDescription(),
+                e.getRuleType(), parse(e.getParams()), e.getJudgePrompt(), e.getStatus(),
+                e.getCreatedBy(), e.getCreatedAt());
+    }
+
     private ReportView toReportView(EvaluationReport r) {
         return new ReportView(r.getId(), r.getDatasetId(), r.getName(), r.getTotalCases(),
                 r.getTestedCases(), parse(r.getMetrics()), parse(r.getFindings()), parse(r.getSummary()),
-                r.getConfidence(), r.getModel(), r.getMode(), r.getCreatedBy(), r.getCreatedAt());
+                r.getConfidence(), r.getModel(), r.getMode(),
+                r.getJudgeRounds(), r.getTraceId(), r.getCreatedBy(), r.getCreatedAt());
     }
 }

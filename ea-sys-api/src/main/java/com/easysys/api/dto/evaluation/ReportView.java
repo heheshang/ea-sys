@@ -18,6 +18,8 @@ public record ReportView(
         BigDecimal confidence,
         String model,
         String mode,
+        Integer judgeRounds,
+        String traceId,
         String createdBy,
         Instant createdAt) {
 }

@@ -5,6 +5,7 @@
  */
 import { computed, reactive, ref } from 'vue'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { GRAPH_MODULE_LABELS, GRAPH_MODULES, createGraphEntry, deleteGraphEntry, getCockpitInsights, getCockpitOverview, listGraphEntries, listLlmTraces, setGraphEntryStatus, updateGraphEntry } from '../api/cockpit'
 import type { AgentGraphEntrySaveRequest, AgentGraphEntryView, CockpitOverviewView } from '../api/types'
@@ -26,11 +27,19 @@ async function refreshAll() {
   }
 }
 
-/* ---------- LLM 调用追踪 ---------- */
+/* ---------- LLM 调用追踪（trace 可从评测报告跳转联动过滤） ---------- */
+const route = useRoute()
+const router = useRouter()
+const traceFilter = ref<string>(String(route.query.trace ?? ''))
 const { data: traces, isLoading: tracesLoading, refetch: refetchTraces } = useQuery({
-  queryKey: ['cockpit-traces'],
-  queryFn: () => listLlmTraces(20),
+  queryKey: ['cockpit-traces', traceFilter],
+  queryFn: () => listLlmTraces(20, traceFilter.value || undefined),
 })
+
+function clearTraceFilter() {
+  traceFilter.value = ''
+  router.replace({ name: 'cockpit' })
+}
 
 /* ---------- 图谱管理 ---------- */
 const activeModule = ref<string>(GRAPH_MODULES[0])
@@ -469,7 +478,12 @@ const statusType = (status: string): 'success' | 'danger' | 'warning' | 'info' =
       <template #header>
         <div class="panel-head">
           <span class="panel-title">LLM 调用追踪</span>
-          <span class="panel-sub">最近 20 条（audit_log）</span>
+          <span v-if="traceFilter" class="panel-actions">
+            <el-tag closable size="small" type="warning" @close="clearTraceFilter">
+              追踪：<code class="trace-code">{{ traceFilter }}</code>
+            </el-tag>
+          </span>
+          <span v-else class="panel-sub">最近 20 条（audit_log）</span>
         </div>
       </template>
       <el-table v-loading="tracesLoading" :data="traces ?? []" border stripe size="small">
@@ -598,6 +612,11 @@ const statusType = (status: string): 'success' | 'danger' | 'warning' | 'info' =
 .panel-sub {
   color: #909399;
   font-size: 12px;
+}
+.trace-code {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: #b88230;
 }
 .stat-grid {
   display: grid;

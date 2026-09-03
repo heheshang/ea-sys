@@ -74,10 +74,10 @@ export async function getCockpitInsights(force = false): Promise<CockpitInsightV
   return data.data
 }
 
-/** GET /api/cockpit/llm-traces?limit= —— LLM 调用追踪（默认 20，上限 100）。 */
-export async function listLlmTraces(limit = 20): Promise<LlmTraceView[]> {
+/** GET /api/cockpit/llm-traces?limit=&trace= —— LLM 调用追踪（默认 20，上限 100；trace 按评测追踪 ID 过滤）。 */
+export async function listLlmTraces(limit = 20, trace?: string): Promise<LlmTraceView[]> {
   const { data } = await http.get<ApiResponse<LlmTraceView[]>>('/cockpit/llm-traces', {
-    params: { limit },
+    params: trace ? { limit, trace } : { limit },
   })
   return data.data
 }

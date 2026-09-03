@@ -361,10 +361,16 @@ public class CockpitService {
 
     // ---------- LLM 追踪 ----------
 
-    /** 最近 N 条调用追踪（默认 20，上限 100）。 */
-    public List<LlmTraceView> llmTraces(int limit) {
+    /** 最近 N 条调用追踪（默认 20，上限 100）；trace 非空时按运行追踪 ID（评测报告联动）过滤。 */
+    public List<LlmTraceView> llmTraces(int limit, String trace) {
         Long tenantId = TenantContext.require();
         int n = Math.min(Math.max(limit, 1), 100);
+        if (trace != null && !trace.isBlank()) {
+            return auditMapper.selectByTrace(tenantId, trace.trim(), n).stream().map(a -> new LlmTraceView(
+                    a.getId(), a.getAgentType(), a.getAction(), a.getStatus(), a.getReason(), a.getModel(),
+                    a.getTokens(), a.getDurationMs(), a.getCost(), a.getConfidence(), a.getSchemaValid(),
+                    a.getOperator(), a.getCreatedAt())).toList();
+        }
         return auditMapper.selectRecent(tenantId, n).stream().map(a -> new LlmTraceView(
                 a.getId(), a.getAgentType(), a.getAction(), a.getStatus(), a.getReason(), a.getModel(),
                 a.getTokens(), a.getDurationMs(), a.getCost(), a.getConfidence(), a.getSchemaValid(),

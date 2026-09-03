@@ -300,11 +300,11 @@ sequenceDiagram
 
 **洞察（CockpitInsightModel）**：健康度 = 各维度加权分（LLM 错误率 / 降级率、图谱启用比例、审计完整性等），输出 `overallHealth + insights[] {level: critical|warning|info, dimension, detail, suggestion}`；全确定性，测试断言健康度区间与 insight 条目。
 
-## 13. 评测中心（数据集 + 内置评测器 + 批量运行）
+## 13. 评测中心（数据集 + 内置评测器 + 自定义 + 批量运行）
 
-**职责**：数据集（scope=llm_call，mode=openjudge / execute，execute 携带被测智能体 agent_type）+ 用例管理 + 15 个内置评测器批量运行 → 各评测器均值 → 报告落库（jsonb）+ 审计。评测器是代码常量内置目录（规则 9 + LLM-Judge 6），不落表。openjudge 用预置响应判分；execute 由 service 真实运行被测智能体（assistant / workflow-dialogue，`ReActAgent.call` 同步 + 30s 超时），注入实际回复与工具调用轨迹（`actual_tool_calls` / `actual_steps`）后走同一判分链路。
+**职责**：数据集（scope=llm_call，mode=openjudge / execute，execute 携带被测智能体 agent_type）+ 用例管理（含 jsonl 批量导入与预览前 2 样本）+ 评测器分组面板（规则 9 + LLM-Judge 6 内置 + 自定义，每组一键全选/清空）+ 批量运行（可配 LLM 判分轮次，多次取均值）→ 各评测器均值 → 报告落库（jsonb）+ 审计 + 追踪 ID（TraceID 联动驾驶舱 LLM 追踪）。内置评测器是代码常量目录（规则 9 + LLM-Judge 6）不落表；自定义评测器落 `evaluation_custom_evaluator` 表（rule = Java 参数化规则 / llm_judge = 可配提示词判分，不引 Python）。openjudge 用预置响应判分；execute 由 service 真实运行被测智能体（assistant / workflow-dialogue，`ReActAgent.call` 同步 + 30s 超时），注入实际回复与工具调用轨迹（`actual_tool_calls` / `actual_steps`）后走同一判分链路。
 
-**承载**：`HarnessAgent`（name=evaluation）+ 确定性 `EvaluationModel`（判分全确定性：规则算法实现；LLM-Judge 在 `easysys.agent.llm.enabled=false` 时走确定性近似降级，测试不依赖 LLM）。新 `AgentType.EVALUATION`，入口 `EvaluationController`：
+**承载**：`HarnessAgent`（name=evaluation）+ 确定性 `EvaluationModel`（规则判分全确定性：内置规则算法 + 自定义三条规则算法均为纯 Java；LLM-Judge 打分由 `LlmJudgeScorer` 在 service 层按用例真实调用 LLM（模型位经 `ModelRegistry.resolve`，走 AgentLlmProperties 配置 `easysys.agent.llm`），每轮 `blockFirst()` 同步取回、正则 `\b\d{1,3}\b` 解析 0-100 分数，轮次间取均值注入判分输入 `judge_scores.{metric}`，成功轮次写 `llm_usage` 用量审计）。LLM 关闭 / 无 key / 解析失败 → 内置 LLM-Judge 走确定性近似降级，自定义 llm_judge 无近似 → 判分不适用 INFO；`easysys.agent.llm.enabled=false` 是默认与测试契约，评测断言不依赖任何真实 LLM。新 `AgentType.EVALUATION`，入口 `EvaluationController`：
 
 | 端点 | 说明 |
 |---|---|
@@ -316,13 +316,20 @@ sequenceDiagram
 | `POST /api/evaluations/datasets/{id}/cases` | 新增用例（seq 缺省 = max+1） |
 | `PUT /api/evaluations/datasets/{id}/cases/{caseId}` | 编辑用例 |
 | `DELETE /api/evaluations/cases/{id}` | 删除用例 |
-| `POST /api/evaluations/run` | 批量运行：`{datasetId, evaluators?}`（缺省 = 全量 15；openjudge 用预置响应判分，execute 真实运行被测智能体） |
-| `GET /api/evaluations/reports` | 报告列表（摘要列） |
+| `POST /api/evaluations/datasets/{id}/import` | jsonl 导入：text/plain，逐行 JSON 或整体 JSON 数组；question 必填，reference→expected_output、response→provided_response、system_prompt→system_prompt；坏行跳过并返回行号明细 |
+| `GET/POST /api/evaluations/custom-evaluators` | 自定义评测器列表 / 新建（rule：rule_type ∈ keyword_contains/regex_match/length_between + params JSON；llm_judge：judgePrompt 含 {question}/{response}/{reference} 占位） |
+| `PUT/DELETE /api/evaluations/custom-evaluators/{id}` | 全量覆盖更新 / 删除（评测指标名 = custom_{id}） |
+| `POST /api/evaluations/run` | 批量运行：`{datasetId, evaluators?, judgeRounds?}`（evaluators 缺省 = 全量内置；judgeRounds 1-5 缺省 1，LLM-Judge 多次取均值；openjudge 用预置响应判分，execute 真实运行被测智能体） |
+| `GET /api/evaluations/reports` | 报告列表（含 judgeRounds / traceId） |
 | `GET /api/evaluations/reports/{id}` | 报告详情 |
 | `DELETE /api/evaluations/reports/{id}` | 删除报告 |
 
-**评测目录（与 `EvaluationModel` 常量逐字对齐）**：规则 `number_accuracy` / `string_exact` / `response_repetition` / `text_similarity` / `observation_information_gain` / `tool_call_accuracy` / `task_success` / `step_efficiency` / `policy_compliance`；LLM-Judge `llm_correctness` / `llm_instruction_following` / `llm_relevance` / `llm_hallucination` / `llm_reasoning_groundedness` / `llm_response_completeness`。四个执行维度评测器参考通用 agent 评测指标：工具调用正确性（期望工具名精确命中 0.5 / 参数全匹配 1.0，有轨迹但未调用 0）、端到端任务成功（期望数字全集命中或文本 bigram 相似度 ≥0.8）、步骤效率（min(1, 期望步数/实际步数)）、策略合规（`expected_policy=[{keyword,prohibit}]` 必备/禁区词，任一违规 0）。模型入参会静默丢弃不在 `ALL_METRICS` 的 metric，前端目录必须与之对齐。
+**评测目录（与 `EvaluationModel` 常量逐字对齐）**：规则 `number_accuracy` / `string_exact` / `response_repetition` / `text_similarity` / `observation_information_gain` / `tool_call_accuracy` / `task_success` / `step_efficiency` / `policy_compliance`；LLM-Judge `llm_correctness` / `llm_instruction_following` / `llm_relevance` / `llm_hallucination` / `llm_reasoning_groundedness` / `llm_response_completeness`。四个执行维度评测器参考通用 agent 评测指标：工具调用正确性（期望工具名精确命中 0.5 / 参数全匹配 1.0，有轨迹但未调用 0）、端到端任务成功（期望数字全集命中或文本 bigram 相似度 ≥0.8）、步骤效率（min(1, 期望步数/实际步数)）、策略合规（`expected_policy=[{keyword,prohibit}]` 必备/禁区词，任一违规 0）。模型入参不在白名单（内置 `ALL_METRICS` 或本次运行已启用的自定义 `custom_{id}`）的 metric 静默丢弃，前端目录必须与之对齐。
 
-**判分与报告**：判分对象 `actual_response`（openjudge 由 service 复制 provided_response；execute 注入真实回复与轨迹；空 = 不适用 null，不计均值）；单用例得分 ≥0.8 记通过；`metrics[] {metric, category, avg_score, passed_count, applicable_count}` 只含适用用例数 >0 的评测器，无适用用例的评测器不进 metrics、仅以 `findings[]` INFO 发现列出（jsonb 原文 snake_case），`summary {score, verdict}`（≥80 PASS / ≥60 WARN / 其余 FAIL），`findings[]` 含 INFO / WARNING / BLOCKED（均值 <0.6）分级与修复建议。报告落 `evaluation_report`（jsonb 原样透传），顶层 `testedCases/totalCases` 走 JavaBean 序列化驼峰。execute 单用例失败 / 超时 / 空回复不整轮报错，该用例判分不适用（INFO），审计形状与 openjudge 一致（同一 `AgentPolicy.run` + `persistAudit`）。
+**自定义评测器**（V15）：`evaluation_custom_evaluator`（category=rule / llm_judge，status=ENABLED/DISABLED，软删）。规则三型全是 Java 确定性实现：keyword_contains（keywords 数组，all=true 需全含、prohibit 命中 0、缺省任一命中判 1）、regex_match（`Pattern.matcher(actual).find()` 命中 1）、length_between（响应长度 ∈ [min,max] 判 1）；params 非法 / 响应为空 → 不适用。llm_judge 用 judge_prompt（含 {question}/{response}/{reference} 占位）走 `LlmJudgeScorer` 真实判分；LLM 未启用时无近似 → metric 判不适用（findings INFO），与 M8 测试约定一致。前端三组面板逐行勾选参与运行，自定义项仅 ENABLED 时可勾选。
 
-**审计约定**：图谱 / 数据集 / 用例 / 报告的全部写操作（create/update/delete/run）均写入 `agent_audit`（action = 端到端动作名，schema 合规即有效），运行评测触发完整 HarnessAgent 链路（超时 / 降级兜底齐全）；前端 `POST /run` 前检查数据集 enabled、用例数 >0，execute 模式同样可运行（数据集对话框选择被测智能体）。
+**判分与报告**：判分对象 `actual_response`（openjudge 由 service 复制 provided_response；execute 注入真实回复与轨迹；空 = 不适用 null，不计均值）；单用例得分 ≥0.8 记通过；`metrics[] {metric, category, avg_score, passed_count, applicable_count}` 只含适用用例数 >0 的评测器，无适用用例的评测器不进 metrics、仅以 `findings[]` INFO 发现列出（jsonb 原文 snake_case），`summary {score, verdict}`（≥80 PASS / ≥60 WARN / 其余 FAIL），`findings[]` 含 INFO / WARNING / BLOCKED（均值 <0.6）分级与修复建议。报告落 `evaluation_report`（jsonb 原样透传），顶层 `testedCases/totalCases` 走 JavaBean 序列化驼峰，新增 `judgeRounds` / `traceId` 列。execute 单用例失败 / 超时 / 空回复不整轮报错，该用例判分不适用（INFO），审计形状与 openjudge 一致（同一 `AgentPolicy.run` + `persistAudit`）。
+
+**TraceID 联动**：`POST /run` 生成 `eval-` + 8 位 hex 的 traceId，注入判分输入顶层 `trace_id`（随 input_summary 落 audit_log JSONB）与报告 `evaluation_report.trace_id`；评测会话 sessionId = `traceId-seq`。驾驶舱 `GET /api/cockpit/llm-traces?trace=` 以 `input_summary` 文本键值匹配过滤（去空格容忍 JSONB 序列化格式），报告详情「查看会话追踪」跳转驾驶舱并挂过滤标签，可清空恢复最近 20 条。
+
+**审计约定**：图谱 / 数据集 / 用例 / 导入 / 自定义评测器 / 报告的全部写操作（create/update/delete/run/import）均写入 `agent_audit`（action = 端到端动作名，schema 合规即有效），运行评测触发完整 HarnessAgent 链路（超时 / 降级兜底齐全）；前端 `POST /run` 前检查数据集 enabled、用例数 >0，execute 模式同样可运行（数据集对话框选择被测智能体）。评测运行审计的 `input_summary` 顶层含 `trace_id` / `judge_rounds` / `custom_evaluators`，供驾驶舱按追踪 ID 联动过滤。

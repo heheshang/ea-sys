@@ -19,7 +19,8 @@
 - 驾驶舱：八类知识领域图谱登记/状态管理（内置目录 + 用户登记覆盖），LLM 调用监控总览（token/调用/成本/延迟/降级，按 Agent 与模型聚合），确定性系统洞察与 LLM 调用追踪（审计驱动）
 - 评测中心：数据集/用例管理（openjudge + execute 两种模式，execute 真实运行被测智能体 assistant / workflow-dialogue 注入工具轨迹），15 个内置评测器（规则 9 + LLM-Judge 6）批量运行 → 指标均值 → 报告落库 + 审计；执行维度新增 tool_call_accuracy / task_success / step_efficiency / policy_compliance 四个确定性规则评测器（V14）
 - 驾驶舱 LLM 卡用量明细：总 Token / 提问轮次 / 调用 / 输入 / 输出 / 缓存命中六指标 + 上下文构成（六类条目数 / Token / 占比，字符折算估算），`llm_usage` 表按会话 upsert（V13），调用与 token 防双计合并 audit 口径
-- 驾驶舱 LLM 卡上下文构成改为查询期 AgentState 实时派生：按 `llm_usage` 最近聊天会话定位，取 agent 实时转录剔末尾最终回复后实算六类构成（中间件快照保留为兜底），估算逻辑抽共享类 `LlmContextEstimator` 与中间件共用防口径漂移
+- 驱动舱 LLM 卡上下文构成改为查询期 AgentState 实时派生：按 `llm_usage` 最近聊天会话定位，取 agent 实时转录剔末尾最终回复后实算六类构成（中间件快照保留为兜底），估算逻辑抽共享类 `LlmContextEstimator` 与中间件共用防口径漂移
+- 评测中心对齐：jsonl 批量导入（逐行/整体数组，坏行跳过错明细行号）、预览前 2 样本、LLM 判分轮次（1-5 多次取均值）、三组评测器面板（规则 9/LLM-Judge 6/自定义，每组一键全选清空）、自定义评测器（rule 三型 Java 参数化规则 + llm_judge 可配提示词，不引 Python）、real LLM-Judge 打分（service 层 LlmJudgeScorer 逐用例调用取均值，LLM 关闭降级确定性近似）、报告 TraceID 联动驾驶舱 LLM 追踪（evaluation_report.trace_id + audit input_summary 过滤）（V15）
 
 ### Changed
 

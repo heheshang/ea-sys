@@ -729,12 +729,55 @@ export interface ReportView {
   confidence: number
   model: string | null
   mode: string
+  /** LLM 判分轮数（多次取均值；缺省 1） */
+  judgeRounds: number
+  /** 运行追踪 ID（驾驶舱 LLM 追踪按此联动过滤） */
+  traceId: string | null
   createdBy: string
   createdAt: string
 }
 
-/** 评测运行请求（evaluators 缺省 = 全量 15 个内置评测器）。 */
+/** 评测运行请求（evaluators 缺省 = 全量 15 个内置评测器；judgeRounds 缺省 1，上限 5）。 */
 export interface EvaluationRunRequest {
   datasetId: number
   evaluators?: string[]
+  judgeRounds?: number
+}
+
+/** 自定义评测器视图（GET/POST/PUT /api/evaluations/custom-evaluators）。 */
+export interface CustomEvaluatorView {
+  id: number
+  /** 评测指标名 = custom_{id} */
+  metric: string
+  name: string
+  category: 'rule' | 'llm_judge'
+  description: string | null
+  /** rule 类规则类型：keyword_contains / regex_match / length_between */
+  ruleType: string | null
+  /** rule 类参数对象（关键词/正则/长度区间） */
+  params: Record<string, unknown> | null
+  /** llm_judge 类判分提示词（{question}/{response}/{reference} 占位） */
+  judgePrompt: string | null
+  status: 'ENABLED' | 'DISABLED'
+  createdBy: string
+  createdAt: string
+}
+
+/** 自定义评测器保存请求（POST 新建 / PUT 全量覆盖）。 */
+export interface CustomSaveRequest {
+  name: string
+  category: 'rule' | 'llm_judge'
+  description?: string | null
+  ruleType?: string | null
+  params?: Record<string, unknown> | null
+  judgePrompt?: string | null
+  status?: 'ENABLED' | 'DISABLED'
+}
+
+/** jsonl 导入结果（POST /api/evaluations/datasets/{id}/import）。 */
+export interface ImportResultView {
+  imported: number
+  skipped: number
+  /** 坏行明细（行号从 1 计：整体 JSON 数组时 = 元素下标+1） */
+  errors: Array<{ line: number; message: string }>
 }

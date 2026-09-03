@@ -404,7 +404,7 @@ const jsonText = (v: unknown): string => (v === undefined || v === null ? '-' : 
       <template #header>
         <div class="panel-head">
           <span class="panel-title">内置评测器目录</span>
-          <span class="panel-sub">15 个：规则 9 + LLM-Judge 6（LLM 未启用时确定性近似）</span>
+          <span class="panel-sub">15 个：规则 9 + LLM-Judge 6（参考业界 AI agent 评测基准；LLM 未启用时确定性近似）</span>
         </div>
       </template>
       <el-table :data="EVALUATOR_CATALOG" border stripe size="small">
@@ -421,7 +421,9 @@ const jsonText = (v: unknown): string => (v === undefined || v === null ? '-' : 
           </template>
         </el-table-column>
         <el-table-column prop="label" label="名称" width="140" />
-        <el-table-column prop="description" label="说明" min-width="260" show-overflow-tooltip />
+        <el-table-column prop="description" label="说明" min-width="240" show-overflow-tooltip />
+        <el-table-column prop="origin" label="参考基准" min-width="180" show-overflow-tooltip>
+        </el-table-column>
       </el-table>
     </el-card>
 

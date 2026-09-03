@@ -17,25 +17,27 @@ export interface EvaluatorMeta {
   category: 'rule' | 'llm_judge'
   label: string
   description: string
+  /** 参考的业界 AI agent 评测基准（τ-bench / GAIA / SafetyBench / MT-Bench 等） */
+  origin: string
 }
 
-/** 评测器目录：规则 9 + LLM-Judge 6。 */
+/** 评测器目录：规则 9 + LLM-Judge 6（参考网络上主流 AI agent 评测指标设计）。 */
 export const EVALUATOR_CATALOG: EvaluatorMeta[] = [
-  { metric: 'number_accuracy', category: 'rule', label: '数字准确率', description: '期望数值命中率（期望含数字时适用）' },
-  { metric: 'string_exact', category: 'rule', label: '字符串精确匹配', description: '去除首尾空白后与期望完全一致' },
-  { metric: 'response_repetition', category: 'rule', label: '回答重复度', description: '字符二元组重复率越低得分越高' },
-  { metric: 'text_similarity', category: 'rule', label: '文本相似度', description: '字符二元组 Jaccard 相似度' },
-  { metric: 'observation_information_gain', category: 'rule', label: '信息增益', description: '响应相对上下文的增量信息占比' },
-  { metric: 'tool_call_accuracy', category: 'rule', label: '工具调用正确性', description: '期望工具名命中 + 参数逐键匹配（execute 轨迹）' },
-  { metric: 'task_success', category: 'rule', label: '任务成功率', description: '端到端成功判定：数字全集命中或文本相似度≥0.8' },
-  { metric: 'step_efficiency', category: 'rule', label: '步数效率', description: '期望步数 / 实际步数（工具调用步 + 回复步）' },
-  { metric: 'policy_compliance', category: 'rule', label: '策略合规率', description: '期望政策条款（必备词/禁区词）逐条合规' },
-  { metric: 'llm_correctness', category: 'llm_judge', label: '正确性', description: 'LLM 判分（未启用时确定性近似）' },
-  { metric: 'llm_instruction_following', category: 'llm_judge', label: '指令遵循', description: 'LLM 判分（未启用时确定性近似）' },
-  { metric: 'llm_relevance', category: 'llm_judge', label: '相关性', description: 'LLM 判分（未启用时确定性近似）' },
-  { metric: 'llm_hallucination', category: 'llm_judge', label: '幻觉检测', description: 'LLM 判分（未启用时确定性近似）' },
-  { metric: 'llm_reasoning_groundedness', category: 'llm_judge', label: '推理有据性', description: 'LLM 判分（未启用时确定性近似）' },
-  { metric: 'llm_response_completeness', category: 'llm_judge', label: '完整性', description: 'LLM 判分（未启用时确定性近似）' },
+  { metric: 'number_accuracy', category: 'rule', label: '数字准确率', description: '期望数值命中率（期望含数字时适用）', origin: 'GSM8K 数值判分（数值全集命中）' },
+  { metric: 'string_exact', category: 'rule', label: '字符串精确匹配', description: '去除首尾空白后与期望完全一致', origin: 'SQuAD EM 精确匹配' },
+  { metric: 'response_repetition', category: 'rule', label: '回答重复度', description: '字符二元组重复率越低得分越高', origin: 'MT-Bench 质量维度（重复惩罚）' },
+  { metric: 'text_similarity', category: 'rule', label: '文本相似度', description: '字符二元组 Jaccard 相似度', origin: 'ROUGE/BLEU 文本相似度族' },
+  { metric: 'observation_information_gain', category: 'rule', label: '信息增益', description: '响应相对上下文的增量信息占比', origin: 'AgentBench 探索/信息增益' },
+  { metric: 'tool_call_accuracy', category: 'rule', label: '工具调用正确性', description: '期望工具名命中 + 参数逐键匹配（execute 轨迹）', origin: 'τ-bench 工具调用正确性' },
+  { metric: 'task_success', category: 'rule', label: '任务成功率', description: '端到端成功判定：数字全集命中或文本相似度≥0.8', origin: 'GAIA / SWE-bench 端到端任务成功' },
+  { metric: 'step_efficiency', category: 'rule', label: '步数效率', description: '期望步数 / 实际步数（工具调用步 + 回复步）', origin: 'WebArena / AgentBench 步数效率' },
+  { metric: 'policy_compliance', category: 'rule', label: '策略合规率', description: '期望政策条款（必备词/禁区词）逐条合规', origin: 'SafetyBench 安全与策略合规' },
+  { metric: 'llm_correctness', category: 'llm_judge', label: '正确性', description: 'LLM 判分（未启用时确定性近似）', origin: 'MT-Bench / LLM-as-a-Judge' },
+  { metric: 'llm_instruction_following', category: 'llm_judge', label: '指令遵循', description: 'LLM 判分（未启用时确定性近似）', origin: 'MT-Bench / LLM-as-a-Judge' },
+  { metric: 'llm_relevance', category: 'llm_judge', label: '相关性', description: 'LLM 判分（未启用时确定性近似）', origin: 'MT-Bench / LLM-as-a-Judge' },
+  { metric: 'llm_hallucination', category: 'llm_judge', label: '幻觉检测', description: 'LLM 判分（未启用时确定性近似）', origin: 'MT-Bench / LLM-as-a-Judge' },
+  { metric: 'llm_reasoning_groundedness', category: 'llm_judge', label: '推理有据性', description: 'LLM 判分（未启用时确定性近似）', origin: 'MT-Bench / LLM-as-a-Judge' },
+  { metric: 'llm_response_completeness', category: 'llm_judge', label: '完整性', description: 'LLM 判分（未启用时确定性近似）', origin: 'MT-Bench / LLM-as-a-Judge' },
 ]
 
 /** GET /api/evaluations/datasets —— 数据集列表（含 caseCount）。 */

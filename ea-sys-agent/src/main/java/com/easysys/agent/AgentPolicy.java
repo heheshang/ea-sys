@@ -77,6 +77,7 @@ public final class AgentPolicy {
             candidate = null;
             status = "FALLBACK";
             reason = "provider_error:" + e.getClass().getSimpleName();
+            log.warn("provider_error 详情: {}", reason, e);
         }
 
         if (candidate == null) {

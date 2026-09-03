@@ -101,7 +101,10 @@ const audienceSummary = computed(() => {
   const cfg = props.data.real?.config as Record<string, unknown> | null
   const name = cfg?.audienceName ? String(cfg.audienceName) : ''
   const id = cfg?.audienceId
-  return `人群：${name || (id ? '#' + String(id) : '未配置')}`
+  if (name || id) return `人群：${name || '#' + String(id)}`
+  // 未圈选时展示 AI 建议（applyAiDraft 注入 aiHint；仅提示，圈选仍须人工）
+  const ai = cfg?.aiHint as { audienceName?: string } | null | undefined
+  return ai?.audienceName ? `人群：待圈选（AI 建议：${String(ai.audienceName)}）` : '人群：未配置'
 })
 
 const summaryLines = computed(() => {

@@ -359,6 +359,14 @@ function updateNodeConfig(k: string, value: unknown) {
   if (!node) return
   const d = dataOf(node)
   const cfg = (d.real.config ?? {}) as Record<string, unknown>
+  // 圈选完成即注入人群名（摘要即时反馈）并清除 AI 建议提示
+  if (k === 'audienceId' && nodeTypeOf(node) === 'AUDIENCE' && value) {
+    const hit = audiences.value.find((a) => a.id === value)
+    if (hit) {
+      cfg.audienceName = hit.name
+      delete cfg.aiHint
+    }
+  }
   if (value === null || value === undefined || value === '') delete cfg[k]
   else cfg[k] = value
   d.real.config = cfg
@@ -850,8 +858,38 @@ function applyAiDraft() {
       if (n > NODE_KEY_COUNTERS[t]) NODE_KEY_COUNTERS[t] = n
     }
   })
+  const hint = latestDraft.value?.audienceHint ?? null
+  const specs = draft.nodes.map((spec): WorkflowNodeSpec => ({
+    ...spec,
+    config: spec.config ? { ...spec.config } : {},
+  }))
+  const triggerSpec = specs.find((s) => s.type === 'TRIGGER')
+  // 剥离 AI 自动圈选：人群一律改由画布「人群」节点人工圈选（防旧式 TRIGGER 兜底静默圈选）
+  if (triggerSpec?.config) delete triggerSpec.config.audienceId
+  // 强制落 AUDIENCE 节点（不填 audienceId = 保存前人工圈选闸门；aiHint 仅供建议展示）
+  let audienceKey = `audience_${NODE_KEY_COUNTERS.AUDIENCE + 1}`
+  while (specs.some((s) => s.key === audienceKey)) {
+    NODE_KEY_COUNTERS.AUDIENCE += 1
+    audienceKey = `audience_${NODE_KEY_COUNTERS.AUDIENCE + 1}`
+  }
+  const aiHint = hint
+    ? { audienceId: hint.audienceId ?? null, audienceName: hint.audienceName ?? hint.suggestedName ?? '' }
+    : null
+  specs.push({
+    key: audienceKey,
+    type: 'AUDIENCE',
+    name: '',
+    config: aiHint?.audienceName ? { aiHint } : {},
+  })
+  const trgKey = triggerSpec?.key ?? ''
+  const rawEdges = trgKey
+    ? [
+        { source: trgKey, target: audienceKey },
+        ...(draft.edges ?? []).map((spec) => (spec.source === trgKey ? { ...spec, source: audienceKey } : spec)),
+      ]
+    : (draft.edges ?? [])
   setNodes(
-    draft.nodes.map((spec): LiteNode => ({
+    specs.map((spec): LiteNode => ({
       id: spec.key,
       type: 'canvas',
       position: isFinitePosition(spec.position) ? spec.position! : { x: 120, y: 80 },
@@ -859,7 +897,7 @@ function applyAiDraft() {
     })),
   )
   setEdges(
-    (draft.edges ?? []).map((spec): LiteEdge => ({
+    rawEdges.map((spec): LiteEdge => ({
       id: `${spec.source}->${spec.target}`,
       source: spec.source,
       target: spec.target,
@@ -876,7 +914,13 @@ function applyAiDraft() {
     autoLayout()
     fitView({ padding: 0.15, maxZoom: 1 })
   }, 0)
-  ElMessage.success('AI 草稿已载入画布，请人工校对节点配置后保存')
+  ElMessage.success(
+    hint?.audienceName
+      ? `AI 草稿已载入画布：请人工圈选「人群」节点（AI 建议：${hint.audienceName}）后保存`
+      : hint?.suggestedName
+        ? `AI 草稿已载入画布：请人工圈选「人群」节点（未匹配现有人群，建议：${hint.suggestedName}）后保存`
+        : 'AI 草稿已载入画布：请人工圈选「人群」节点后保存',
+  )
 }
 
 function toolLabel(name: string): string {
@@ -910,9 +954,16 @@ function layoutWidthOf(n: LiteNode): number {
   }
   const t = realOf(n).type
   if (t === 'AUDIENCE') {
-    // AUDIENCE 摘要为人群名（config 注入，非边驱动）
-    const name = (realOf(n).config as Record<string, unknown> | null)?.audienceName
-    return Math.max(nodeWidthOf(nodeLabel(n)), nodeWidthOf(`人群：${name ? String(name) : ''}`))
+    // 与 CanvasNode.audienceSummary 同源（含未圈选时 AI 建议）
+    const cfg = (realOf(n).config ?? {}) as Record<string, unknown>
+    const name = cfg.audienceName ? String(cfg.audienceName) : ''
+    const id = cfg.audienceId
+    let summary = `人群：${name || (id ? '#' + String(id) : '未配置')}`
+    if (!name && !id) {
+      const ai = cfg.aiHint as { audienceName?: string } | null | undefined
+      if (ai?.audienceName) summary = `人群：待圈选（AI 建议：${String(ai.audienceName)}）`
+    }
+    return Math.max(nodeWidthOf(nodeLabel(n)), nodeWidthOf(summary))
   }
   const withSummary = t === 'CONDITION' || t === 'AGENT_SPLIT'
   return nodeWidthOfNode(realOf(n).key, allEdges(), targetName, nodeLabel(n), withSummary)
@@ -1150,6 +1201,14 @@ onUnmounted(() => {
                   <el-option v-for="a in audiences" :key="a.id" :label="a.name" :value="a.id" />
                 </el-select>
               </el-form-item>
+              <el-alert
+                v-if="nodeConfig(selectedNode).aiHint && !nodeConfig(selectedNode).audienceId"
+                type="info"
+                :closable="false"
+                show-icon
+                :title="`AI 建议圈选「${String((nodeConfig(selectedNode).aiHint as { audienceName?: string }).audienceName ?? '')}」——请人工确认圈选（可改选其他人群）`"
+                class="ai-hint-alert"
+              />
               <div class="config-hint">成员由该人群圈选快照提供；执行 / 干跑 / 定时 / 立即触发均优先以本节点为批量成员来源。</div>
             </template>
             <!-- TRIGGER：触发方式（定时 / 行为事件 / API / 手动 / 立即） -->

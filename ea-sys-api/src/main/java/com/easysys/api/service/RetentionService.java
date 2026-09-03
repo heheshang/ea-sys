@@ -8,13 +8,16 @@ import com.easysys.api.mapper.AudienceSnapshotMapper;
 import com.easysys.api.mapper.AudienceSnapshotMemberMapper;
 import com.easysys.api.mapper.EventMapper;
 import com.easysys.common.tenant.TenantContext;
+import com.easysys.engine.entity.Workflow;
 import com.easysys.engine.mapper.DeliveryRecordMapper;
 import com.easysys.engine.mapper.ExecutionMapper;
+import com.easysys.engine.mapper.WorkflowMapper;
 import org.springframework.stereotype.Service;
 
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -30,15 +33,17 @@ public class RetentionService {
     private final AudienceSnapshotMapper snapshotMapper;
     private final AudienceSnapshotMemberMapper memberMapper;
     private final EventMapper eventMapper;
+    private final WorkflowMapper workflowMapper;
 
     public RetentionService(ExecutionMapper executionMapper, DeliveryRecordMapper deliveryMapper,
                             AudienceSnapshotMapper snapshotMapper, AudienceSnapshotMemberMapper memberMapper,
-                            EventMapper eventMapper) {
+                            EventMapper eventMapper, WorkflowMapper workflowMapper) {
         this.executionMapper = executionMapper;
         this.deliveryMapper = deliveryMapper;
         this.snapshotMapper = snapshotMapper;
         this.memberMapper = memberMapper;
         this.eventMapper = eventMapper;
+        this.workflowMapper = workflowMapper;
     }
 
     /**
@@ -102,15 +107,24 @@ public class RetentionService {
     public WorkflowEffectView workflowEffect(int days) {
         Long tenantId = TenantContext.require();
         List<WorkflowEffectView.WorkflowEffectItem> items = new ArrayList<>();
-        for (Map<String, Object> ex : executionMapper.selectLatestExecutions(tenantId)) {
+        List<Long> workflowIds = new ArrayList<>();
+        List<Map<String, Object>> executions = executionMapper.selectLatestExecutions(tenantId);
+        for (Map<String, Object> ex : executions) {
+            workflowIds.add(((Number) ex.get("workflow_id")).longValue());
+        }
+        Map<Long, String> namesById = new HashMap<>();
+        for (Workflow wf : workflowMapper.selectBatchIds(workflowIds)) {
+            namesById.put(wf.getId(), wf.getName());
+        }
+        for (Map<String, Object> ex : executions) {
             long execId = ((Number) ex.get("execution_id")).longValue();
             long workflowId = ((Number) ex.get("workflow_id")).longValue();
             Instant ref = ((Timestamp) ex.get("ref_time")).toInstant();
             Instant windowEnd = ref.plusSeconds(days * 86400L);
             long reached = deliveryMapper.countDistinctByExecution(tenantId, execId);
             long retained = deliveryMapper.countRetainedByExecution(tenantId, execId, ref, windowEnd);
-            items.add(new WorkflowEffectView.WorkflowEffectItem(workflowId, reached, retained,
-                    reached == 0 ? 0 : (double) retained / reached));
+            items.add(new WorkflowEffectView.WorkflowEffectItem(workflowId, namesById.get(workflowId),
+                    reached, retained, reached == 0 ? 0 : (double) retained / reached));
         }
         return new WorkflowEffectView(items);
     }

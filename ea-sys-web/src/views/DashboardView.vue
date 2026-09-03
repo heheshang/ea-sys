@@ -12,7 +12,7 @@ import { BarChart, FunnelChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent } from 'echarts/components'
 import VChart from 'vue-echarts'
 import { getChannelEffect, getIntervalRetention, getRetentionFunnel, getWorkflowEffect } from '../api/retention'
-import type { FunnelView } from '../api/types'
+import type { FunnelView, WorkflowEffectItem } from '../api/types'
 
 use([CanvasRenderer, BarChart, FunnelChart, GridComponent, TooltipComponent])
 
@@ -90,14 +90,30 @@ const channelOption = computed(() => {
   }
 })
 
-// 工作流效果柱状：触达 / 留存人数
+// 工作流效果柱状：触达 / 留存人数（x 轴显示工作流名称，超长截断，悬浮看全名）
+const workflowIdLabel = (w: WorkflowEffectItem) => {
+  const name = w.workflowName || `WF #${w.workflowId}`
+  return name.length > 8 ? `${name.slice(0, 8)}…` : name
+}
 const workflowOption = computed(() => {
   const items = workflow.value?.workflows ?? []
   return {
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      formatter: (params: Array<{ dataIndex: number; marker: string; seriesName: string; value: number }>) => {
+        const w = items[params[0].dataIndex]
+        const rows = params.map((p) => `${p.marker}${p.seriesName}：${p.value}`).join('<br/>')
+        return `<b>${w.workflowName || `WF #${w.workflowId}`}</b><br/>${rows}`
+      },
+    },
     legend: { data: ['触达', '留存'], top: 0 },
     grid: { left: 40, right: 16, top: 32, bottom: 28 },
-    xAxis: { type: 'category', data: items.map((w) => `WF #${w.workflowId}`), axisLabel: { interval: 0 } },
+    xAxis: {
+      type: 'category',
+      data: items.map(workflowIdLabel),
+      axisLabel: { interval: 0, width: 64, overflow: 'truncate' },
+    },
     yAxis: { type: 'value', minInterval: 1 },
     series: [
       { name: '触达', type: 'bar', data: items.map((w) => w.reached), itemStyle: { color: '#67c23a' }, barMaxWidth: 28 },
@@ -225,8 +241,8 @@ const hasWorkflows = computed(() => (workflow.value?.workflows ?? []).length > 0
           <template v-else>
             <VChart :option="workflowOption" autoresize class="chart" style="height: 220px" />
             <el-table :data="workflow?.workflows ?? []" size="small" border class="mini-table">
-              <el-table-column label="工作流" width="90">
-                <template #default="{ row }">WF #{{ row.workflowId }}</template>
+              <el-table-column label="工作流" width="180" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.workflowName || `WF #${row.workflowId}` }}</template>
               </el-table-column>
               <el-table-column prop="reached" label="触达人数" width="90" />
               <el-table-column prop="retained" label="留存人数" width="90" />

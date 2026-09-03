@@ -10,6 +10,7 @@ public record WorkflowEffectView(
 
     public record WorkflowEffectItem(
             long workflowId,
+            String workflowName,
             long reached,
             long retained,
             double retentionRate) {

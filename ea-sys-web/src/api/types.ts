@@ -331,6 +331,7 @@ export interface ChannelEffectView {
 /** 工作流效果行（GET /api/retention/workflows）。 */
 export interface WorkflowEffectItem {
   workflowId: number
+  workflowName: string
   reached: number
   retained: number
   retentionRate: number

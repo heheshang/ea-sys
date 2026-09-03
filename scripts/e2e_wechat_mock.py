@@ -16,6 +16,7 @@ app 触发真实发送后本进程打印 token 与模板消息请求，并回微
   （适配器以 errcode==0 判定成功，HTTP 2xx 不代表成功）
 """
 import json
+import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 TOKEN_RESP = json.dumps({"access_token": "mock-token-abc", "expires_in": 7200}).encode()
@@ -52,5 +53,8 @@ class H(BaseHTTPRequestHandler):
         pass
 
 
-print("[wechat-mock] listening on 127.0.0.1:8090", flush=True)
-HTTPServer(('127.0.0.1', 8090), H).serve_forever()
+# 容器化部署时以 MOCK_BIND_HOST=0.0.0.0 覆盖，供 api 容器经服务名访问；本机直跑保持 127.0.0.1。
+bind = os.environ.get('MOCK_BIND_HOST', '127.0.0.1')
+port = int(os.environ.get('MOCK_PORT', '8090'))
+print(f"[wechat-mock] listening on {bind}:{port}", flush=True)
+HTTPServer((bind, port), H).serve_forever()

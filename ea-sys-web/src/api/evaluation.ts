@@ -1,0 +1,104 @@
+import { http } from './http'
+import type {
+  ApiResponse,
+  CaseSaveRequest,
+  CaseView,
+  DatasetSaveRequest,
+  DatasetView,
+  EvaluationRunRequest,
+  ReportView,
+} from './types'
+
+/** 内置评测器元数据（与 EvaluationModel ALL_METRICS 逐字对齐，代码常量内置不落表）。 */
+export interface EvaluatorMeta {
+  /** 评测器唯一标识（判分入参 metric，缺省会静默丢弃） */
+  metric: string
+  /** rule = 确定性规则；llm_judge = LLM 判分（未启用时确定性近似） */
+  category: 'rule' | 'llm_judge'
+  label: string
+  description: string
+}
+
+/** 评测器目录：规则 5 + LLM-Judge 6。 */
+export const EVALUATOR_CATALOG: EvaluatorMeta[] = [
+  { metric: 'number_accuracy', category: 'rule', label: '数字准确率', description: '期望数值命中率（期望含数字时适用）' },
+  { metric: 'string_exact', category: 'rule', label: '字符串精确匹配', description: '去除首尾空白后与期望完全一致' },
+  { metric: 'response_repetition', category: 'rule', label: '回答重复度', description: '字符二元组重复率越低得分越高' },
+  { metric: 'text_similarity', category: 'rule', label: '文本相似度', description: '字符二元组 Jaccard 相似度' },
+  { metric: 'observation_information_gain', category: 'rule', label: '信息增益', description: '响应相对上下文的增量信息占比' },
+  { metric: 'llm_correctness', category: 'llm_judge', label: '正确性', description: 'LLM 判分（未启用时确定性近似）' },
+  { metric: 'llm_instruction_following', category: 'llm_judge', label: '指令遵循', description: 'LLM 判分（未启用时确定性近似）' },
+  { metric: 'llm_relevance', category: 'llm_judge', label: '相关性', description: 'LLM 判分（未启用时确定性近似）' },
+  { metric: 'llm_hallucination', category: 'llm_judge', label: '幻觉检测', description: 'LLM 判分（未启用时确定性近似）' },
+  { metric: 'llm_reasoning_groundedness', category: 'llm_judge', label: '推理有据性', description: 'LLM 判分（未启用时确定性近似）' },
+  { metric: 'llm_response_completeness', category: 'llm_judge', label: '完整性', description: 'LLM 判分（未启用时确定性近似）' },
+]
+
+/** GET /api/evaluations/datasets —— 数据集列表（含 caseCount）。 */
+export async function listDatasets(): Promise<DatasetView[]> {
+  const { data } = await http.get<ApiResponse<DatasetView[]>>('/evaluations/datasets')
+  return data.data
+}
+
+/** POST /api/evaluations/datasets —— 新建数据集（scope=llm_call；mode=openjudge/execute）。 */
+export async function createDataset(req: DatasetSaveRequest): Promise<DatasetView> {
+  const { data } = await http.post<ApiResponse<DatasetView>>('/evaluations/datasets', req)
+  return data.data
+}
+
+/** PUT /api/evaluations/datasets/{id} —— 编辑数据集（可改 mode/status）。 */
+export async function updateDataset(id: number, req: DatasetSaveRequest): Promise<DatasetView> {
+  const { data } = await http.put<ApiResponse<DatasetView>>(`/evaluations/datasets/${id}`, req)
+  return data.data
+}
+
+/** DELETE /api/evaluations/datasets/{id} —— 删除数据集（级联软删用例 + 报告）。 */
+export async function deleteDataset(id: number): Promise<void> {
+  await http.delete<ApiResponse<null>>(`/evaluations/datasets/${id}`)
+}
+
+/** GET /api/evaluations/datasets/{id}/cases —— 数据集用例列表（seq 升序）。 */
+export async function listCases(datasetId: number): Promise<CaseView[]> {
+  const { data } = await http.get<ApiResponse<CaseView[]>>(`/evaluations/datasets/${datasetId}/cases`)
+  return data.data
+}
+
+/** POST /api/evaluations/datasets/{id}/cases —— 新增用例（seq 缺省 = 现有 max+1）。 */
+export async function addCase(datasetId: number, req: CaseSaveRequest): Promise<CaseView> {
+  const { data } = await http.post<ApiResponse<CaseView>>(`/evaluations/datasets/${datasetId}/cases`, req)
+  return data.data
+}
+
+/** PUT /api/evaluations/cases/{id} —— 编辑用例。 */
+export async function updateCase(id: number, req: CaseSaveRequest): Promise<CaseView> {
+  const { data } = await http.put<ApiResponse<CaseView>>(`/evaluations/cases/${id}`, req)
+  return data.data
+}
+
+/** DELETE /api/evaluations/cases/{id} —— 删除用例。 */
+export async function deleteCase(id: number): Promise<void> {
+  await http.delete<ApiResponse<null>>(`/evaluations/cases/${id}`)
+}
+
+/** POST /api/evaluations/run —— 批量运行评测（AgentPolicy 确定性评测 + 审计），返回落库报告。 */
+export async function runEvaluation(req: EvaluationRunRequest): Promise<ReportView> {
+  const { data } = await http.post<ApiResponse<ReportView>>('/evaluations/run', req)
+  return data.data
+}
+
+/** GET /api/evaluations/reports —— 报告列表。 */
+export async function listReports(): Promise<ReportView[]> {
+  const { data } = await http.get<ApiResponse<ReportView[]>>('/evaluations/reports')
+  return data.data
+}
+
+/** GET /api/evaluations/reports/{id} —— 报告详情。 */
+export async function getReport(id: number): Promise<ReportView> {
+  const { data } = await http.get<ApiResponse<ReportView>>(`/evaluations/reports/${id}`)
+  return data.data
+}
+
+/** DELETE /api/evaluations/reports/{id} —— 删除报告。 */
+export async function deleteReport(id: number): Promise<void> {
+  await http.delete<ApiResponse<null>>(`/evaluations/reports/${id}`)
+}

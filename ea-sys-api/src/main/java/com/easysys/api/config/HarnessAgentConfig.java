@@ -1,8 +1,11 @@
 package com.easysys.api.config;
 
 import com.easysys.agent.AgentType;
+import com.easysys.api.middleware.LlmUsageMiddleware;
+import com.easysys.agent.CockpitInsightModel;
 import com.easysys.agent.DeterministicChurnPlanner;
 import com.easysys.agent.DeterministicLayerPlanner;
+import com.easysys.agent.EvaluationModel;
 import com.easysys.agent.RuleModel;
 import com.easysys.agent.StrategyAgent;
 import com.easysys.agent.WorkflowPlanner;
@@ -19,14 +22,17 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * 批处理三路（LAYER/CHURN/WORKFLOW）统一 HarnessAgent bean 装配：执行面由框架承载
- * （模型位、会话隔离、无状态一次性调用），合规闸门（schema 硬校验 + 置信度 + fallback）
- * 由 {@code AgentPolicy} 在执行后承担，审计仍落 audit_log。
+ * 批处理五路（LAYER/CHURN/WORKFLOW/COCKPIT/EVALUATION）统一 HarnessAgent bean 装配：
+ * 执行面由框架承载（模型位、会话隔离、无状态一次性调用），合规闸门（schema 硬校验 +
+ * 置信度 + fallback）由 {@code AgentPolicy} 在执行后承担，审计仍落 audit_log。
  *
  * <p>模型位选择（与 docs/04-agent-design.md §6 一致）：LLM 主提供方开启（easysys.agent.llm
  * enabled + apiKey）时经 ModelRegistry 解析 OpenAI 兼容模型（openai:qwen3.7-plus → Token Plan
  * 端点），否则确定性 RuleModel（本里程碑默认）。resolve 失败回退确定性并告警 —— 启动不中断；
  * 运行时 LLM 挂（网络/认证）由 AgentPolicy 以 provider_error 落入确定性 fallback，执行不中断。</p>
+ *
+ * <p>驾驶舱洞察与评测中心为确定性规划器（CockpitInsightModel/EvaluationModel），
+ * LLM 启用后由同一闸门链路承接真实模型评估，审计与 schema 校验不变。</p>
  *
  * <p>会话语义：批处理无状态（disableSessionPersistence + RuntimeContext(userId=tenantId) 多租户
  * 隔离），stateStore 与工作区统一走 Redis（agentscope-extensions-redis Jedis 路径，键前缀
@@ -40,37 +46,55 @@ public class HarnessAgentConfig {
 
     @Bean(destroyMethod = "close")
     public HarnessAgent layerStrategyAgent(RedisDistributedStore agentscopeDistributedStore,
-                                           AgentLlmProperties llm) {
+                                           AgentLlmProperties llm, LlmUsageMiddleware llmUsageMiddleware) {
         DeterministicLayerPlanner planner = new DeterministicLayerPlanner();
         return batchAgent("layer-strategy", "人群分层策略生成（LAYER 批处理）",
-                sysPrompt(AgentType.LAYER), planner, llm, agentscopeDistributedStore);
+                sysPrompt(AgentType.LAYER), planner, llm, agentscopeDistributedStore, llmUsageMiddleware);
     }
 
     @Bean(destroyMethod = "close")
     public HarnessAgent churnScanAgent(RedisDistributedStore agentscopeDistributedStore,
-                                       AgentLlmProperties llm) {
+                                       AgentLlmProperties llm, LlmUsageMiddleware llmUsageMiddleware) {
         DeterministicChurnPlanner planner = new DeterministicChurnPlanner();
         return batchAgent("churn-scan", "成员流失风险批量评估（CHURN 批处理）",
-                sysPrompt(AgentType.CHURN), planner, llm, agentscopeDistributedStore);
+                sysPrompt(AgentType.CHURN), planner, llm, agentscopeDistributedStore, llmUsageMiddleware);
     }
 
     @Bean(destroyMethod = "close")
     public HarnessAgent workflowGenerateAgent(RedisDistributedStore agentscopeDistributedStore,
-                                              AgentLlmProperties llm) {
+                                              AgentLlmProperties llm, LlmUsageMiddleware llmUsageMiddleware) {
         WorkflowPlanner planner = new WorkflowPlanner();
         return batchAgent("workflow-generate", "运营工作流 DAG 生成（WORKFLOW 批处理）",
-                sysPrompt(AgentType.WORKFLOW), planner, llm, agentscopeDistributedStore);
+                sysPrompt(AgentType.WORKFLOW), planner, llm, agentscopeDistributedStore, llmUsageMiddleware);
+    }
+
+    @Bean(destroyMethod = "close")
+    public HarnessAgent cockpitInsightAgent(RedisDistributedStore agentscopeDistributedStore,
+                                            AgentLlmProperties llm, LlmUsageMiddleware llmUsageMiddleware) {
+        CockpitInsightModel planner = new CockpitInsightModel();
+        return batchAgent("cockpit-insights", "驾驶舱洞察生成（COCKPIT 批处理）",
+                sysPrompt(AgentType.COCKPIT), planner, llm, agentscopeDistributedStore, llmUsageMiddleware);
+    }
+
+    @Bean(destroyMethod = "close")
+    public HarnessAgent evaluationAgent(RedisDistributedStore agentscopeDistributedStore,
+                                        AgentLlmProperties llm, LlmUsageMiddleware llmUsageMiddleware) {
+        EvaluationModel planner = new EvaluationModel();
+        return batchAgent("evaluation", "评测中心报告生成（EVALUATION 批处理）",
+                sysPrompt(AgentType.EVALUATION), planner, llm, agentscopeDistributedStore, llmUsageMiddleware);
     }
 
     /** 批处理装配模板：单次迭代、无工具/无会话/无子代理，模型位按 LLM 开关选择。 */
     private static HarnessAgent batchAgent(String name, String description, String sysPrompt,
                                            StrategyAgent planner, AgentLlmProperties llm,
-                                           RedisDistributedStore distributedStore) {
+                                           RedisDistributedStore distributedStore,
+                                           LlmUsageMiddleware llmUsageMiddleware) {
         return HarnessAgent.builder()
                 .name(name)
                 .description(description)
                 .sysPrompt(sysPrompt)
                 .model(primaryModel(llm, planner))
+                .middleware(llmUsageMiddleware)
                 .distributedStore(distributedStore)
                 .filesystem(new RemoteFilesystemSpec(distributedStore.baseStore())
                         .isolationScope(IsolationScope.USER))
@@ -110,6 +134,8 @@ public class HarnessAgentConfig {
             case ROUTER -> "你是触达路由决策智能体：根据入参输出单用户通道路由决策 JSON";
             case CHURN -> "你是流失风险评测智能体：根据入参输出成员流失风险批量评估 JSON";
             case WORKFLOW -> "你是运营工作流设计智能体：根据自然语言需求与租户模板/人群/通道上下文，输出工作流 DAG JSON";
+            case COCKPIT -> "你是驾驶舱洞察智能体：根据 LLM 调用监控与图谱状态输出结构化洞察与健康分 JSON";
+            case EVALUATION -> "你是评测智能体：对 LLM 调用/工具/提示词执行评测，输出指标、分级发现与准确率报告 JSON";
         };
     }
 }

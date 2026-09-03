@@ -18,6 +18,8 @@ const menus = [
   { path: '/monitoring', label: '触达监控' },
   { path: '/agent', label: '智能体配置' },
   { path: '/templates', label: '模板与通道' },
+  { path: '/cockpit', label: '驾驶舱' },
+  { path: '/evaluations', label: '评测中心' },
 ]
 
 const activeMenu = computed(() => {

@@ -63,6 +63,18 @@ const router = createRouter({
           component: () => import('../views/TemplateChannelView.vue'),
           meta: { title: '模板与通道' },
         },
+        {
+          path: 'cockpit',
+          name: 'cockpit',
+          component: () => import('../views/CockpitView.vue'),
+          meta: { title: '驾驶舱' },
+        },
+        {
+          path: 'evaluations',
+          name: 'evaluations',
+          component: () => import('../views/EvaluationView.vue'),
+          meta: { title: '评测中心' },
+        },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/workflows' },

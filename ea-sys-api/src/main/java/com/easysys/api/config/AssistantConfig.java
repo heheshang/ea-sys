@@ -6,6 +6,7 @@ import com.easysys.api.dialogue.AssistantSearchAudiencesTool;
 import com.easysys.api.dialogue.AssistantSearchKbTool;
 import com.easysys.api.dialogue.AssistantSearchWorkflowsTool;
 import com.easysys.api.dialogue.AssistantTriggerWorkflowTool;
+import com.easysys.api.middleware.LlmUsageMiddleware;
 import io.agentscope.core.tool.Toolkit;
 import io.agentscope.extensions.redis.RedisDistributedStore;
 import io.agentscope.harness.agent.HarnessAgent;
@@ -41,6 +42,7 @@ public class AssistantConfig {
 
     @Bean(destroyMethod = "close")
     public HarnessAgent assistantAgent(RedisDistributedStore agentscopeDistributedStore,
+                                       LlmUsageMiddleware llmUsageMiddleware,
                                        AssistantSearchKbTool searchKbTool,
                                        AssistantQueryStatsTool queryStatsTool,
                                        AssistantSearchAudiencesTool searchAudiencesTool,
@@ -60,6 +62,7 @@ public class AssistantConfig {
                 .description("AI 智能客服：知识库问答、运营数据、人群圈定、AI 触发工作流、创建工作流入口")
                 .sysPrompt(SYS_PROMPT)
                 .model(new com.easysys.agent.AssistantModel())
+                .middleware(llmUsageMiddleware)
                 .toolkit(toolkit)
                 .distributedStore(agentscopeDistributedStore)
                 .filesystem(new RemoteFilesystemSpec(agentscopeDistributedStore.baseStore())

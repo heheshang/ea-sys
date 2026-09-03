@@ -8,6 +8,7 @@
 启动：python3 scripts/e2e_sms_mock.py
 验证：执行工作流后观察输出；delivery_record 应出现 sms-* DELIVERED。
 """
+import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 class H(BaseHTTPRequestHandler):
@@ -26,5 +27,8 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-print("[sms-mock] listening on 127.0.0.1:8089", flush=True)
-HTTPServer(('127.0.0.1', 8089), H).serve_forever()
+# 容器化部署时以 MOCK_BIND_HOST=0.0.0.0 覆盖，供 api 容器经服务名访问；本机直跑保持 127.0.0.1。
+bind = os.environ.get('MOCK_BIND_HOST', '127.0.0.1')
+port = int(os.environ.get('MOCK_PORT', '8089'))
+print(f"[sms-mock] listening on {bind}:{port}", flush=True)
+HTTPServer((bind, port), H).serve_forever()

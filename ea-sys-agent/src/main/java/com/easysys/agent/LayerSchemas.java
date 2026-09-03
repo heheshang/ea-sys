@@ -147,4 +147,99 @@ public final class LayerSchemas {
                 }
                 """;
     }
+
+    /**
+     * 驾驶舱洞察 schema（cockpit_insights 输出约束）：健康分 + 洞察列表。
+     * insights 无条件至少一条（无异常也产「运行正常」info 项，minItems=1）。
+     */
+    public static String cockpitInsightSchema() {
+        return """
+                {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "required": ["generated_at", "overall_health", "insights"],
+                  "properties": {
+                    "generated_at": { "type": "string" },
+                    "overall_health": { "type": "number", "minimum": 0, "maximum": 100 },
+                    "insights": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "object",
+                        "required": ["type", "severity", "title", "detail"],
+                        "properties": {
+                          "type": { "enum": ["anomaly", "trend", "recommendation", "info"] },
+                          "severity": { "enum": ["info", "warning", "critical"] },
+                          "title": { "type": "string" },
+                          "detail": { "type": "string" },
+                          "metric_ref": { "type": "string" },
+                          "suggestion": { "type": "string" }
+                        }
+                      }
+                    },
+                    "strategy_version": { "type": "string", "minLength": 1 },
+                    "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+                  }
+                }
+                """;
+    }
+
+    /**
+     * 评测报告 schema（evaluation_run 输出约束）：指标均值 + 分级发现 + 汇总 verdict + 置信度。
+     * metrics 为选中评测器均值；findings 按阈值产 INFO/WARNING/BLOCKED；summary.score 0-100。
+     */
+    public static String evaluationReportSchema() {
+        return """
+                {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "required": ["report_type", "scope", "mode", "tested_cases", "metrics",
+                                "findings", "summary", "confidence", "generated_at"],
+                  "properties": {
+                    "report_type": { "enum": ["evaluation_report"] },
+                    "scope": { "type": "string" },
+                    "mode": { "enum": ["openjudge", "execute"] },
+                    "tested_cases": { "type": "integer", "minimum": 0 },
+                    "metrics": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["metric", "category", "avg_score", "passed_count"],
+                        "properties": {
+                          "metric": { "type": "string" },
+                          "category": { "enum": ["rule", "llm_judge"] },
+                          "avg_score": { "type": "number", "minimum": 0, "maximum": 1 },
+                          "passed_count": { "type": "integer", "minimum": 0 },
+                          "applicable_count": { "type": "integer", "minimum": 0 }
+                        }
+                      }
+                    },
+                    "findings": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["level", "dimension", "detail"],
+                        "properties": {
+                          "level": { "enum": ["INFO", "WARNING", "BLOCKED"] },
+                          "dimension": { "type": "string" },
+                          "detail": { "type": "string" },
+                          "suggestion": { "type": "string" }
+                        }
+                      }
+                    },
+                    "summary": {
+                      "type": "object",
+                      "required": ["score", "verdict"],
+                      "properties": {
+                        "score": { "type": "number", "minimum": 0, "maximum": 100 },
+                        "verdict": { "enum": ["PASS", "WARN", "FAIL"] }
+                      }
+                    },
+                    "strategy_version": { "type": "string", "minLength": 1 },
+                    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+                    "generated_at": { "type": "string" }
+                  }
+                }
+                """;
+    }
 }

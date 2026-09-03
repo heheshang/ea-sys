@@ -100,6 +100,40 @@ M0–M6 核心闭环完成：五模块（common / engine / agent / channel / api
 
 待续：真实通道供应商 API 适配、消息队列 RocketMQ 迁移、策略 Agent 化。已具备：计划导入校验、AB / 灰度分流（percentage 操作符）、Redis Streams 事件消息队列。
 
+## Docker 化部署（全套）
+
+根 `docker-compose.yml` 一键启动整套：PostgreSQL / Redis 基础设施 + api（8080）/ notify（8092）/ web（前端，宿主 5173 → 容器 nginx 80，`/api/` 反代到 api 服务）+ 三个 e2e 通道 mock（smtp / wechat / sms，仅 compose 内网，无宿主端口映射）。
+
+```bash
+# colima：指定 docker engine socket
+export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock
+
+# 构建镜像（首次 maven 依赖下载较慢，约 8-9 分钟）
+docker compose build
+
+# 启动全套
+docker compose up -d
+
+# 查看状态（api / notify healthy 即就绪）
+docker compose ps
+```
+
+访问地址：
+
+| 服务 | 地址 |
+|---|---|
+| 前端 | http://localhost:5173 |
+| API | http://localhost:8080 |
+| notify | http://localhost:8092 |
+| 开发账号 | admin / admin123（dev profile 自动初始化租户 1）|
+
+说明：
+
+- API 容器访问通道 mock 走 compose 服务名（`smtp-mock:3025` / `sms-mock:8089` / `wechat-mock:8090`），通道配置经 `PUT /api/channel-configs/{channel}` 加密保存，默认已指向容器内服务名。宿主 3025 / 8090 / 8089 若被本地进程占用不影响容器化部署。
+- LLM：宿主设置 `EA_LLM_API_KEY` 后在 `docker compose up` 前导出即启用真实 LLM；未设置时 `EA_LLM_ENABLED=true` 但密钥为空，agent 降级确定性 fallback（驾驶舱聚合 / 聊天记账不受影响）。
+- `notify` 模拟通道延迟 `NOTIFY_SIMULATE_DELAY_MS`（默认 500ms），回调 `http://api:8080/api/deliveries/callback`。
+- 数据落卷 `ea-sys-pgdata` / `ea-sys-redisdata`（compose 命名卷，重建容器不丢数据）。
+
 ## 本地开发
 
 ```bash

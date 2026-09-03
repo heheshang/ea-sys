@@ -2,6 +2,7 @@ package com.easysys.api.config;
 
 import com.easysys.api.dialogue.WorkflowListChannelsTool;
 import com.easysys.api.dialogue.WorkflowPlanTool;
+import com.easysys.api.middleware.LlmUsageMiddleware;
 import com.easysys.api.dialogue.WorkflowSearchAudiencesTool;
 import com.easysys.api.dialogue.WorkflowSearchTemplatesTool;
 import io.agentscope.core.tool.Toolkit;
@@ -41,6 +42,7 @@ public class WorkflowDialogueConfig {
 
     @Bean(destroyMethod = "close")
     public HarnessAgent workflowDialogueAgent(RedisDistributedStore agentscopeDistributedStore,
+                                              LlmUsageMiddleware llmUsageMiddleware,
                                               WorkflowListChannelsTool listChannelsTool,
                                               WorkflowSearchTemplatesTool searchTemplatesTool,
                                               WorkflowSearchAudiencesTool searchAudiencesTool,
@@ -56,6 +58,7 @@ public class WorkflowDialogueConfig {
                 .description("对话式创建工作流：澄清触发/人群/通道需求，确认后生成 DAG 草稿")
                 .sysPrompt(SYS_PROMPT)
                 .model(new com.easysys.agent.WorkflowDialogueModel())
+                .middleware(llmUsageMiddleware)
                 .toolkit(toolkit)
                 .distributedStore(agentscopeDistributedStore)
                 .filesystem(new RemoteFilesystemSpec(agentscopeDistributedStore.baseStore())

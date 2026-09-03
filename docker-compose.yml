@@ -29,6 +29,104 @@ services:
       timeout: 3s
       retries: 10
 
+  # ---- ea-sys 应用服务（全部 docker 化） ----
+
+  api:
+    build:
+      context: .
+      dockerfile: ea-sys-api/Dockerfile
+    container_name: ea-sys-api
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ea_sys
+      DB_USER: ea_sys
+      DB_PASSWORD: ea_sys
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      NOTIFY_BASE_URL: http://notify:8092
+      NOTIFY_CALLBACK_TOKEN: ea-sys-notify-dev-token
+      JWT_SECRET: ${JWT_SECRET:-ea-sys-dev-secret-key-change-me-0123456789abcdef0123456789abcdef}
+      CHANNEL_ENCRYPT_PASSWORD: ${CHANNEL_ENCRYPT_PASSWORD:-ea-sys-dev-channel-key}
+      EA_LLM_ENABLED: ${EA_LLM_ENABLED:-true}
+      EA_LLM_API_KEY: ${EA_LLM_API_KEY:-}
+      # 环境变量直接覆盖 application.yml 的 easysys.agent.llm.{base-url,model-id}（SpringBoot relaxed binding）
+      EASYSYS_AGENT_LLM_BASEURL: ${EA_LLM_BASE_URL:-https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}
+      EASYSYS_AGENT_LLM_MODELID: ${EA_LLM_MODEL_ID:-openai:qwen3.7-plus}
+      TZ: Asia/Shanghai
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/8080'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  notify:
+    build:
+      context: .
+      dockerfile: ea-sys-notify/Dockerfile
+    container_name: ea-sys-notify
+    environment:
+      NOTIFY_CALLBACK_URL: http://api:8080/api/deliveries/callback
+      NOTIFY_CALLBACK_TOKEN: ea-sys-notify-dev-token
+      NOTIFY_SIMULATE_DELAY_MS: ${NOTIFY_SIMULATE_DELAY_MS:-500}
+      TZ: Asia/Shanghai
+    ports:
+      - "8092:8092"
+    depends_on:
+      api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/8092'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  web:
+    build:
+      context: ./ea-sys-web
+    container_name: ea-sys-web
+    ports:
+      - "5173:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # e2e 通道 mock：不经宿主端口映射（宿主 3025/8090/8089 被本地进程占用），
+  # 仅 compose 内网供 api 容器以服务名访问；外部访问走 api 自身端口。
+  smtp-mock:
+    build:
+      context: ./scripts
+    container_name: ea-sys-smtp-mock
+    environment:
+      MOCK_BIND_HOST: 0.0.0.0
+      MOCK_PORT: "3025"
+    command: ["python3", "e2e_smtp_mock.py"]
+
+  wechat-mock:
+    build:
+      context: ./scripts
+    container_name: ea-sys-wechat-mock
+    environment:
+      MOCK_BIND_HOST: 0.0.0.0
+      MOCK_PORT: "8090"
+    command: ["python3", "e2e_wechat_mock.py"]
+
+  sms-mock:
+    build:
+      context: ./scripts
+    container_name: ea-sys-sms-mock
+    environment:
+      MOCK_BIND_HOST: 0.0.0.0
+      MOCK_PORT: "8089"
+    command: ["python3", "e2e_sms_mock.py"]
+
 volumes:
   ea-sys-pgdata:
   ea-sys-redisdata:

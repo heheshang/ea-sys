@@ -3,6 +3,7 @@ package com.easysys.api.controller;
 import com.easysys.agent.WorkflowDialoguePolicy;
 import com.easysys.api.dto.workflow.AiChatRequest;
 import com.easysys.api.service.AiWorkflowService;
+import com.easysys.api.service.LlmUsageService;
 import org.springframework.beans.factory.annotation.Qualifier;
 import com.easysys.common.tenant.TenantContext;
 import com.easysys.common.web.BizException;
@@ -73,12 +74,15 @@ public class WorkflowAiController {
     private final HarnessAgent agent;
     private final AiWorkflowService aiWorkflowService;
     private final ObjectMapper json;
+    private final LlmUsageService llmUsageService;
 
     public WorkflowAiController(@Qualifier("workflowDialogueAgent") HarnessAgent agent,
-                                AiWorkflowService aiWorkflowService, ObjectMapper json) {
+                                AiWorkflowService aiWorkflowService, ObjectMapper json,
+                                LlmUsageService llmUsageService) {
         this.agent = agent;
         this.aiWorkflowService = aiWorkflowService;
         this.json = json;
+        this.llmUsageService = llmUsageService;
     }
 
     @PostMapping(value = "/ai-chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -92,6 +96,9 @@ public class WorkflowAiController {
                 .put("tenantId", Long.class, tenantId)
                 .put("operator", String.class, username)
                 .build();
+
+        // 提问轮次记账：ai-chat 请求入口（批处理不记轮次）；旁路失败不影响主链路
+        llmUsageService.markRound(tenantId, "workflow-dialogue", req.sessionId());
 
         ReActAgent delegate = agent.getDelegate();
         Msg msg = buildMsg(req, delegate, userId, req.sessionId());

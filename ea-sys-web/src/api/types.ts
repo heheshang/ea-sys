@@ -500,3 +500,232 @@ export interface AudienceMember {
   email: string
   status: string
 }
+
+/* ---------- M8：驾驶舱 / 评测中心 ---------- */
+
+/** Agent 图谱登记项（内置目录 source=builtin id=null；用户行 source=user）。 */
+export interface AgentGraphEntryView {
+  id: number | null
+  module: string
+  entryKey: string
+  name: string
+  description: string | null
+  payload: unknown
+  status: 'ENABLED' | 'DISABLED'
+  version: string | null
+  source: 'builtin' | 'user'
+  createdBy: string | null
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+/** 图谱登记新建/编辑请求。 */
+export interface AgentGraphEntrySaveRequest {
+  module: string
+  entryKey: string
+  name: string
+  description?: string | null
+  payload?: unknown
+  status?: 'ENABLED' | 'DISABLED'
+  version?: string | null
+}
+
+/** 按 agent_type / model 分组的 LLM 调用聚合行。 */
+export interface LlmSeries {
+  name: string
+  calls: number
+  success: number
+  fallback: number
+  error: number
+  avgDurationMs: number
+  sumTokens: number
+  sumCost: number
+}
+
+/** 按天聚合（近 7 天 trend）。 */
+export interface LlmTrend {
+  day: string
+  calls: number
+  success: number
+  sumTokens: number
+  sumCost: number
+}
+
+/** 单模块图谱统计。 */
+export interface ModuleStat {
+  module: string
+  total: number
+  enabled: number
+}
+
+/** 单 Agent 类型登记状态。 */
+export interface AgentStat {
+  type: string
+  name: string
+  llmEnabled: boolean
+  modelId: string
+}
+
+/** 监控总览（GET /api/cockpit/overview）。 */
+export interface CockpitOverviewView {
+  llm: {
+    enabled: boolean
+    modelId: string | null
+    calls: number
+    success: number
+    fallback: number
+    error: number
+    avgDurationMs: number
+    sumTokens: number
+    sumCost: number
+    schemaValidRate: number
+    errorRate: number
+    fallbackRate: number
+    rounds: number
+    sumInputTokens: number
+    sumOutputTokens: number
+    sumCachedTokens: number
+    context: {
+      entries: number
+      tokens: number
+      categories: Array<{
+        key: string
+        entries: number
+        tokens: number
+      }>
+    } | null
+    byAgent: LlmSeries[]
+    byModel: LlmSeries[]
+    trend: LlmTrend[]
+  }
+  graph: {
+    total: number
+    enabled: number
+    modules: ModuleStat[]
+  }
+  knowledge: { docs: number; chunks: number }
+  memory: { keys: number }
+  agents: { byType: AgentStat[] }
+}
+
+/** 洞察视图（GET /api/cockpit/insights，缓存 300s，force 绕过）。 */
+export interface CockpitInsightView {
+  generatedAt: string
+  overallHealth: number
+  insights: CockpitInsight[]
+}
+
+/** 单条洞察发现。 */
+export interface CockpitInsight {
+  level: 'critical' | 'warning' | 'info'
+  dimension: string
+  detail: string
+  suggestion: string
+}
+
+/** LLM 调用追踪行（audit_log 最近 N 条）。 */
+export interface LlmTraceView {
+  id: number
+  agentType: string
+  action: string
+  status: string
+  reason: string | null
+  model: string | null
+  tokens: number | null
+  durationMs: number | null
+  cost: number | null
+  confidence: number | null
+  schemaValid: boolean | null
+  operator: string | null
+  createdAt: string
+}
+
+/* ---------- M8：评测中心 ---------- */
+
+/** 评测数据集（GET /api/evaluations/datasets）。 */
+export interface DatasetView {
+  id: number
+  name: string
+  description: string | null
+  scope: string
+  mode: 'openjudge' | 'execute'
+  status: 'ENABLED' | 'DISABLED'
+  caseCount: number
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** 数据集新建/编辑请求。 */
+export interface DatasetSaveRequest {
+  name: string
+  description?: string | null
+  scope?: string
+  mode?: 'openjudge' | 'execute'
+  status?: 'ENABLED' | 'DISABLED'
+}
+
+/** 评测用例（GET /api/evaluations/datasets/{id}/cases）。 */
+export interface CaseView {
+  id: number
+  datasetId: number
+  seq: number | null
+  question: string
+  systemPrompt: string | null
+  expectedOutput: unknown
+  toolSchema: unknown
+  expectedTool: unknown
+  providedResponse: string | null
+  createdAt: string
+}
+
+/** 用例新建/编辑请求。 */
+export interface CaseSaveRequest {
+  seq?: number | null
+  question: string
+  systemPrompt?: string | null
+  expectedOutput?: unknown
+  toolSchema?: unknown
+  expectedTool?: unknown
+  providedResponse?: string | null
+}
+
+/** 评测指标均值行（report.metrics[]）。 */
+export interface ReportMetric {
+  metric: string
+  category: 'rule' | 'llm_judge'
+  avg_score: number
+  passed_count: number
+  applicable_count: number
+}
+
+/** 分级发现行（report.findings[]）。 */
+export interface ReportFinding {
+  level: 'BLOCKED' | 'WARNING' | 'INFO'
+  dimension: string
+  detail: string
+  suggestion?: string | null
+}
+
+/** 评测报告（GET /api/evaluations/reports；metrics/findings/summary 为 JSON 原文）。 */
+export interface ReportView {
+  id: number
+  datasetId: number
+  name: string
+  totalCases: number
+  testedCases: number
+  metrics: ReportMetric[]
+  findings: ReportFinding[]
+  summary: { score: number; verdict: 'PASS' | 'WARN' | 'FAIL' }
+  confidence: number
+  model: string | null
+  mode: string
+  createdBy: string
+  createdAt: string
+}
+
+/** 评测运行请求（evaluators 缺省 = 全量 11 个内置评测器）。 */
+export interface EvaluationRunRequest {
+  datasetId: number
+  evaluators?: string[]
+}

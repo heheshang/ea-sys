@@ -4,6 +4,7 @@ import com.easysys.agent.AssistantPolicy;
 import com.easysys.api.assistant.KnowledgeBaseService;
 import com.easysys.api.dto.assistant.KbDocumentView;
 import com.easysys.api.dto.workflow.AiChatRequest;
+import com.easysys.api.service.LlmUsageService;
 import com.easysys.common.tenant.TenantContext;
 import com.easysys.common.web.ApiResponse;
 import com.easysys.common.web.BizException;
@@ -93,12 +94,15 @@ public class AssistantController {
     private final HarnessAgent agent;
     private final KnowledgeBaseService knowledgeBaseService;
     private final ObjectMapper json;
+    private final LlmUsageService llmUsageService;
 
     public AssistantController(@Qualifier("assistantAgent") HarnessAgent agent,
-                               KnowledgeBaseService knowledgeBaseService, ObjectMapper json) {
+                               KnowledgeBaseService knowledgeBaseService, ObjectMapper json,
+                               LlmUsageService llmUsageService) {
         this.agent = agent;
         this.knowledgeBaseService = knowledgeBaseService;
         this.json = json;
+        this.llmUsageService = llmUsageService;
     }
 
     // ---- 对话（SSE） ----
@@ -114,6 +118,9 @@ public class AssistantController {
                 .put("tenantId", Long.class, tenantId)
                 .put("operator", String.class, username)
                 .build();
+
+        // 提问轮次记账：ai-chat 请求入口（批处理不记轮次）；旁路失败不影响主链路
+        llmUsageService.markRound(tenantId, "assistant", req.sessionId());
 
         ReActAgent delegate = agent.getDelegate();
         Msg msg = buildMsg(req, delegate, userId, req.sessionId());

@@ -1,0 +1,9 @@
+# 构建上下文为仓库根（多模块 maven 构建需要全部模块源码）。
+# 排除构建产物与依赖目录，缩小上下文。
+**/target
+**/node_modules
+**/dist
+.git
+*.md
+docs/
+scripts/

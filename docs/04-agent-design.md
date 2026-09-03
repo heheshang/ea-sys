@@ -270,3 +270,59 @@ sequenceDiagram
 **SSE 事件与卡片**：复用 `{type}` 枚举事件（TEXT_BLOCK_DELTA / TOOL_CALL_* / REQUIRE_USER_CONFIRM / USER_CONFIRM_RESULT / AGENT_RESULT），另加自定义帧：`assistant_card {kind: kb|stats|audiences|workflows|trigger, data}`（controller 在工具结果终态按工具名映射下发，前端按 kind 渲染卡片：引用 / 统计表 / 人群列表 / 工作流快捷触发 / 触发结果）、`switch_workflow_dialogue`。工作流创建会话内的 `draft_ready` 草稿经 localStorage 中转，画布页 onMounted 消费并 `applyAiDraft()` 载入。
 
 **HITL 闸门**：`trigger_workflow` 与创建工作流的 `plan_workflow` 同走框架 ASK → `RequireUserConfirmEvent`；挂起期间前端禁输入、仅确认 / 取消，未确认消息后端 400 防御；确认经 Msg 元数据通道传递，不污染对话上下文（恢复执行不重走模型输出）。真实触发走既有执行链路（画布 AUDIENCE 人群节点为批量成员来源），失败类目以 `error` 字段透出。
+
+## 12. 驾驶舱（图谱管理 + 监控总览）
+
+**职责**：两张页面补全 Agent 基础设施的可观测性 —— 图谱管理页对八类知识领域（ONTOLOGY / WORKFLOW / AUDIENCE / CHANNEL / TEMPLATE / TRIGGER / RULE / MONITOR）做登记与状态管理；监控总览页聚合 LLM 调用（token / 调用 / 成本 / 延迟 / 降级率）并给出确定性系统洞察（不引入图数据库，登记即状态清单）。
+
+**承载**：`HarnessAgent`（name=cockpit）+ 确定性 `CockpitInsightModel`（洞察 = 规则聚合，无 LLM/网络/随机）。新 `AgentType.COCKPIT`，入口 `CockpitController`：
+
+| 端点 | 说明 |
+|---|---|
+| `GET /api/cockpit/overview` | 总览：llm 聚合（byAgent / byModel / 近 7 天 trend）+ 图谱状态（模块统计）+ 知识库 / 记忆 / Agent 目录（LLM 状态） |
+| `GET /api/cockpit/graph?module=` | 某领域登记清单（内置 25 项 + 用户登记，同 key 用户行覆盖内置） |
+| `POST /api/cockpit/graph` | 新建登记（payload 透传 JSONB） |
+| `PUT /api/cockpit/graph/{id}` | 编辑用户登记（内置行 id=null 不可编辑） |
+| `PATCH /api/cockpit/graph/{id}/status` | 启用 / 停用（仅用户行） |
+| `DELETE /api/cockpit/graph/{id}` | 删除用户登记 |
+| `GET /api/cockpit/insights?force=` | 确定性洞察（缓存 300s；force=1 强制重新生成，经 AgentPolicy 链路 ~秒级） |
+| `GET /api/cockpit/llm-traces?limit=` | LLM 调用追踪（agent_audit 聚合，最近 N 条） |
+
+**总览聚合**：llm 卡片聚合 `agent_audit` 中 LLM 各状态（success / fallback / error）的调用数、token、成本、平均耗时与降级率；`easysys.agent.llm.enabled=false` 时 `schemaValidRate=1.0`、模型位显示 `deterministic`，总览仍完整可读。图谱统计按内置目录 + 用户覆盖行的启用状态汇总，前端以 8 域 Tab + 表格管理，builtin 行只读展示来源 / 状态。
+
+**LLM 用量明细 + 上下文构成（`llm_usage` 表，V13）**：M8 后驾驶舱 LLM 卡补六项指标 —— 总 Token / 提问轮次 / 调用 / 输入 Token / 输出 Token / 缓存命中 Token，以及「上下文构成」（窗口内最近一次对话模型输入：系统提示词 / 工具 Schema / 用户消息 / 助手消息 / 注入上下文 / 工具结果 六类的条目数 + Token + 占比）。
+
+- **采集点**：`LlmUsageMiddleware`（挂载于 assistant / workflow-dialogue / 五路批处理 agent，`onModelCall` 同 OtelTracingMiddleware）：pre 调共享估算类 `LlmContextEstimator.compose(messages, tools)` 生成六类构成 JSON（中间件与驾驶舱共用同一实现防口径漂移）；doOnNext 捕获 `ModelCallEndEvent.getUsage()` 真实 token；仅当 usage.total > 0 记账（确定性模型 usage 恒 0 → 不写行，测试环境零影响）。同一次调用闭环记一次：ReAct 工具循环多轮 = 多次 upsert 累加 `calls`，`context` 覆盖为最后一次调用输入。`markRound` 在聊天入口无条件执行（LLM 禁用也写轮次行）→ `llm_usage` 表同时是聊天会话台账，构成查询期据其定位最近会话。
+- **表结构**：`llm_usage(id, tenant_id, agent_type, session_id, calls, rounds, input_tokens, output_tokens, cached_tokens, context jsonb, created_at, updated_at)`，`UNIQUE(tenant_id, agent_type, session_id)`，每会话一行 upsert（calls +1 / token 累加 / context 覆盖）。
+- **口径**：轮次 = 聊天（ai-chat / workflow-dialogue）请求数，控制器入口 markRound，批处理不记轮次；构成 token 为字符折算估算（chars/2.5 + overhead，与框架 compaction 同启发式），UI 标注「估算」，占比分母 = 构成总和；注入上下文以 synthetic 元数据判定优先于角色。
+- **上下文构成主源 = 查询期 AgentState 实时派生**：overview 时按 `llm_usage` 最近 7 天聊天会话行（agent_type ∈ assistant / workflow-dialogue）定位 session_id → 对应 HarnessAgent delegate `getAgentState(tenantId, sessionId)` 取实时转录 → 剔末尾 ASSISTANT 最终回复（不在任何模型输入内；中间 assistant tool_use 消息属于后续输入保留）→ `LlmContextEstimator.compose` 实算；工具 Schema = agent 注册 `toolkit.getToolSchemas()` 全量。查得到状态即展示真实转录构成；状态缺失/会话过期回退 `llm_usage.context` 快照（快照本身仍由中间件预写，双源口径一致）。
+- **防双计合并**：overview 的 `calls` = audit 批处理 + llm_usage 聊天通道（assistant / workflow-dialogue，SQL FILTER 拆出）；`sumTokens` = audit + llm_usage 输入 + 输出（LLM 模式下审计 tokens 恒 null 不双计）；轮次 / 输入 / 输出 / 缓存命中 = llm_usage 全通道 SUM；上下文 = 最近一次聊天调用（批处理 digest 不污染对话上下文）；速率 / 错误率 / 降级率 / 耗时 / 成本 / 成功降级等仍保持 audit 口径。
+
+**洞察（CockpitInsightModel）**：健康度 = 各维度加权分（LLM 错误率 / 降级率、图谱启用比例、审计完整性等），输出 `overallHealth + insights[] {level: critical|warning|info, dimension, detail, suggestion}`；全确定性，测试断言健康度区间与 insight 条目。
+
+## 13. 评测中心（数据集 + 内置评测器 + 批量运行）
+
+**职责**：数据集（scope=llm_call，mode=openjudge / execute）+ 用例管理 + 11 个内置评测器批量运行 → 各评测器均值 → 报告落库（jsonb）+ 审计。评测器是代码常量内置目录（规则 5 + LLM-Judge 6），不落表。
+
+**承载**：`HarnessAgent`（name=evaluation）+ 确定性 `EvaluationModel`（判分全确定性：规则算法实现；LLM-Judge 在 `easysys.agent.llm.enabled=false` 时走确定性近似降级，测试不依赖 LLM）。新 `AgentType.EVALUATION`，入口 `EvaluationController`：
+
+| 端点 | 说明 |
+|---|---|
+| `GET /api/evaluations/datasets` | 数据集列表（含 caseCount） |
+| `POST /api/evaluations/datasets` | 新建（scope=llm_call，mode=openjudge/execute，status） |
+| `PUT /api/evaluations/datasets/{id}` | 编辑（mode / status 可改） |
+| `DELETE /api/evaluations/datasets/{id}` | 删除（级联软删用例 + 报告） |
+| `GET /api/evaluations/datasets/{id}/cases` | 用例列表（seq 升序） |
+| `POST /api/evaluations/datasets/{id}/cases` | 新增用例（seq 缺省 = max+1） |
+| `PUT /api/evaluations/datasets/{id}/cases/{caseId}` | 编辑用例 |
+| `DELETE /api/evaluations/cases/{id}` | 删除用例 |
+| `POST /api/evaluations/run` | 批量运行：`{datasetId, evaluators?}`（缺省 = 全量 11；execute 模式抛 BizException 不可运行） |
+| `GET /api/evaluations/reports` | 报告列表（摘要列） |
+| `GET /api/evaluations/reports/{id}` | 报告详情 |
+| `DELETE /api/evaluations/reports/{id}` | 删除报告 |
+
+**评测目录（与 `EvaluationModel` 常量逐字对齐）**：规则 `number_accuracy` / `string_exact` / `response_repetition` / `text_similarity` / `observation_information_gain`；LLM-Judge `llm_correctness` / `llm_instruction_following` / `llm_relevance` / `llm_hallucination` / `llm_reasoning_groundedness` / `llm_response_completeness`。模型入参会静默丢弃不在 `ALL_METRICS` 的 metric，前端目录必须与之对齐。
+
+**判分与报告**：判分对象 `actual_response`（openjudge 由 service 复制 provided_response；空 = 不适用 null，不计均值）；单用例得分 ≥0.8 记通过；`metrics[] {metric, category, avg_score, passed_count, applicable_count}`（jsonb 原文 snake_case），`summary {score, verdict}`（≥80 PASS / ≥60 WARN / 其余 FAIL），`findings[]` 含 INFO（无适用用例）/ WARNING / BLOCKED（均值 <0.6）分级与修复建议。报告落 `evaluation_report`（jsonb 原样透传），顶层 `testedCases/totalCases` 走 JavaBean 序列化驼峰。
+
+**审计约定**：图谱 / 数据集 / 用例 / 报告的全部写操作（create/update/delete/run）均写入 `agent_audit`（action = 端到端动作名，schema 合规即有效），运行评测触发完整 HarnessAgent 链路（超时 / 降级兜底齐全）；前端 `POST /run` 前检查数据集 mode=openjudge 且 enabled、用例数 >0，execute 模式运行按钮禁用并提示。

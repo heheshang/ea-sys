@@ -199,7 +199,7 @@ public class DagValidator {
                         errors.add("AGENT_SPLIT 节点只允许至多一条无条件（无通道兜底）出边: " + x.getKey());
                     }
                 }
-                case DELAY, ACTION, UPDATE -> {
+                case AUDIENCE, DELAY, ACTION, UPDATE -> {
                     if (out > 1) {
                         errors.add(t + " 节点 " + x.getKey() + " 只允许至多一条出边");
                     }

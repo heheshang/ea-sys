@@ -79,6 +79,7 @@ const props = defineProps<NodeProps>()
 
 const TYPE_META: Record<WorkflowNodeType, { label: string; color: string }> = {
   TRIGGER: { label: '触发', color: '#67c23a' },
+  AUDIENCE: { label: '人群', color: '#2f54eb' },
   CONDITION: { label: '条件', color: '#e6a23c' },
   AGENT_SPLIT: { label: 'Agent 分流', color: '#b37feb' },
   DELAY: { label: '延时', color: '#36cfc9' },
@@ -93,9 +94,18 @@ const displayName = computed(() => props.data.real?.name || meta.value.label)
 
 /** 摘要节点：条件/分流的分支信息挂在出边上，从当前画布 store 取（避免父组件逐处注入）。 */
 const { edges: flowEdges, nodes: flowNodes } = useVueFlow()
-const showSummary = computed(() => type.value === 'CONDITION' || type.value === 'AGENT_SPLIT')
+const showSummary = computed(() => type.value === 'CONDITION' || type.value === 'AGENT_SPLIT' || type.value === 'AUDIENCE')
+
+/** AUDIENCE：摘要为绑定人群名（后端 view 已注入 audienceName；缺省回退人群 id）。 */
+const audienceSummary = computed(() => {
+  const cfg = props.data.real?.config as Record<string, unknown> | null
+  const name = cfg?.audienceName ? String(cfg.audienceName) : ''
+  const id = cfg?.audienceId
+  return `人群：${name || (id ? '#' + String(id) : '未配置')}`
+})
 
 const summaryLines = computed(() => {
+  if (type.value === 'AUDIENCE') return [audienceSummary.value]
   if (!showSummary.value) return []
   const key = props.data.real?.key
   if (!key) return []
@@ -112,6 +122,10 @@ const moreCount = computed(() => Math.max(0, summaryLines.value.length - SUMMARY
 const summaryTitle = computed(() => (summaryLines.value.length ? summaryLines.value.join('\n') : ''))
 
 const nodeWidth = computed(() => {
+  if (type.value === 'AUDIENCE') {
+    // AUDIENCE 摘要为人群名（非边驱动），直接按名称与摘要行取较大者
+    return Math.max(nodeWidthOf(displayName.value), nodeWidthOf(audienceSummary.value))
+  }
   const targetName = (k: string): string => {
     const t = (flowNodes.value as Array<{ id: string; data: { real?: { name?: string } } }>).find((n) => n.id === k)
     return t?.data?.real?.name?.trim() || k

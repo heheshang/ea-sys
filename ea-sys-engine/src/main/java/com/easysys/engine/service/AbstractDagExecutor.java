@@ -269,6 +269,11 @@ public abstract class AbstractDagExecutor {
                 } else if (type == NodeType.UPDATE) {
                     output.put("contacts", contacts);
                     passThrough(outs, here, arriving);
+                } else if (type == NodeType.AUDIENCE) {
+                    // 成员来自画布人群节点：api 层按节点 audienceId 圈选装配，此处记录并透传
+                    output.put("contacts", contacts);
+                    output.put("audienceId", parseConfig(node).path("audienceId").asLong(0));
+                    passThrough(outs, here, arriving);
                 } else if (type == NodeType.DELAY) {
                     output.put("delayMinutes", delayMinutes(node));
                     passThrough(outs, here, arriving);

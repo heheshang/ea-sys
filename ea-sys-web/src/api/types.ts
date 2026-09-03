@@ -23,7 +23,7 @@ export interface WhoamiResult {
 
 /** 画布节点类型（后端 NodeType）。 */
 export type WorkflowNodeType =
-  | 'TRIGGER' | 'CONDITION' | 'AGENT_SPLIT' | 'DELAY' | 'ACTION' | 'UPDATE' | 'END'
+  | 'TRIGGER' | 'AUDIENCE' | 'CONDITION' | 'AGENT_SPLIT' | 'DELAY' | 'ACTION' | 'UPDATE' | 'END'
 
 /** 画布节点（WorkflowNodeSpec）。key 画布内唯一；config 为节点配置 JSON 对象。 */
 export interface WorkflowNodeSpec {

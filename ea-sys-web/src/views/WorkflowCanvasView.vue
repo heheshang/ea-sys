@@ -15,7 +15,7 @@ import type { Connection, Edge, Node } from '@vue-flow/core'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
 import dagre from '@dagrejs/dagre'
-import CanvasNode, { nodeHeightOf, nodeWidthOfNode } from '../components/canvas/CanvasNode.vue'
+import CanvasNode, { NODE_H, SUMMARY_LINE_H, nodeHeightOf, nodeWidthOf, nodeWidthOfNode } from '../components/canvas/CanvasNode.vue'
 import EdgeConditionEditor from '../components/canvas/EdgeConditionEditor.vue'
 import {
   aiChat,
@@ -97,6 +97,7 @@ const reportVisible = ref(false)
 /* 节点面板（后端 WORKFLOW 节点类型；AGENT_SPLIT 按发布策略分层分流） */
 const PALETTE: Array<{ type: WorkflowNodeType; label: string }> = [
   { type: 'TRIGGER', label: '触发' },
+  { type: 'AUDIENCE', label: '人群' },
   { type: 'CONDITION', label: '条件' },
   { type: 'AGENT_SPLIT', label: 'Agent 分流' },
   { type: 'ACTION', label: '动作' },
@@ -138,7 +139,7 @@ const selectedEdge = computed(() =>
 )
 
 const NODE_KEY_COUNTERS: Record<WorkflowNodeType, number> = {
-  TRIGGER: 0, CONDITION: 0, AGENT_SPLIT: 0, DELAY: 0, ACTION: 0, UPDATE: 0, END: 0,
+  TRIGGER: 0, AUDIENCE: 0, CONDITION: 0, AGENT_SPLIT: 0, DELAY: 0, ACTION: 0, UPDATE: 0, END: 0,
 }
 
 function nextKey(type: WorkflowNodeType): string {
@@ -371,7 +372,7 @@ async function load() {
   const wf = await getWorkflow(workflowId.value)
   // 播种节点 key 计数器，避免新节点与已加载节点重名
   wf.nodes.forEach((spec) => {
-    const m = /^(TRIGGER|CONDITION|AGENT_SPLIT|DELAY|ACTION|UPDATE|END)_(\d+)$/.exec(spec.key)
+    const m = /^(TRIGGER|AUDIENCE|CONDITION|AGENT_SPLIT|DELAY|ACTION|UPDATE|END)_(\d+)$/.exec(spec.key)
     if (m) {
       const t = m[1] as WorkflowNodeType
       const n = Number(m[2])
@@ -776,7 +777,7 @@ function applyAiDraft() {
   status.value = ''
   version.value = 0
   draft.nodes.forEach((spec) => {
-    const m = /^(TRIGGER|CONDITION|AGENT_SPLIT|DELAY|ACTION|UPDATE|END)_(\d+)$/.exec(spec.key)
+    const m = /^(TRIGGER|AUDIENCE|CONDITION|AGENT_SPLIT|DELAY|ACTION|UPDATE|END)_(\d+)$/.exec(spec.key)
     if (m) {
       const t = m[1] as WorkflowNodeType
       const n = Number(m[2])
@@ -842,8 +843,19 @@ function layoutWidthOf(n: LiteNode): number {
     return t ? nodeLabel(t) : k
   }
   const t = realOf(n).type
+  if (t === 'AUDIENCE') {
+    // AUDIENCE 摘要为人群名（config 注入，非边驱动）
+    const name = (realOf(n).config as Record<string, unknown> | null)?.audienceName
+    return Math.max(nodeWidthOf(nodeLabel(n)), nodeWidthOf(`人群：${name ? String(name) : ''}`))
+  }
   const withSummary = t === 'CONDITION' || t === 'AGENT_SPLIT'
   return nodeWidthOfNode(realOf(n).key, allEdges(), targetName, nodeLabel(n), withSummary)
+}
+
+/** AUDIENCE 摘要恒一行（人群名），高度固定；其余按出边行数。 */
+function layoutHeightOf(n: LiteNode): number {
+  if (realOf(n).type === 'AUDIENCE') return NODE_H + SUMMARY_LINE_H
+  return nodeHeightOf(realOf(n).key, allEdges())
 }
 
 function autoLayout() {
@@ -851,14 +863,14 @@ function autoLayout() {
   g.setDefaultEdgeLabel(() => ({}))
   g.setGraph({ rankdir: 'LR', nodesep: 60, ranksep: 110 })
   allNodes().forEach((n) => {
-    g.setNode(n.id, { width: layoutWidthOf(n), height: nodeHeightOf(realOf(n).key, allEdges()) })
+    g.setNode(n.id, { width: layoutWidthOf(n), height: layoutHeightOf(n) })
   })
   allEdges().forEach((e) => g.setEdge(e.source, e.target))
   dagre.layout(g)
   setNodes(
     allNodes().map((n) => {
       const w = layoutWidthOf(n)
-      const h = nodeHeightOf(realOf(n).key, allEdges())
+      const h = layoutHeightOf(n)
       const p = g.node(n.id)
       return { ...n, position: { x: p.x - w / 2, y: p.y - h / 2 } }
     }),
@@ -1052,6 +1064,20 @@ onUnmounted(() => {
                   </div>
                 </div>
               </el-form-item>
+            </template>
+            <!-- AUDIENCE：绑定圈选人群（批量成员来源） -->
+            <template v-else-if="selectedNode && nodeTypeOf(selectedNode) === 'AUDIENCE'">
+              <el-form-item label="圈选人群">
+                <el-select
+                  :model-value="selectedNode ? nodeConfig(selectedNode).audienceId : ''"
+                  placeholder="选择圈选人群"
+                  style="width: 100%"
+                  @update:model-value="(v: number) => updateNodeConfig('audienceId', v)"
+                >
+                  <el-option v-for="a in audiences" :key="a.id" :label="a.name" :value="a.id" />
+                </el-select>
+              </el-form-item>
+              <div class="config-hint">成员由该人群圈选快照提供；执行 / 干跑 / 定时 / 立即触发均优先以本节点为批量成员来源。</div>
             </template>
             <!-- TRIGGER：触发方式（定时 / 行为事件 / API / 手动 / 立即） -->
             <template v-else-if="selectedNode && nodeTypeOf(selectedNode) === 'TRIGGER'">

@@ -1,6 +1,7 @@
 package com.easysys.api.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.easysys.api.dto.audience.SnapshotResponse;
 import com.easysys.api.dto.workflow.DeliveryLogView;
 import com.easysys.api.dto.workflow.DryRunRequest;
 import com.easysys.api.dto.workflow.DryRunResponse;
@@ -83,6 +84,7 @@ public class WorkflowService {
     private final DryRunExecutor dryRunExecutor;
     private final WorkflowExecutor workflowExecutor;
     private final AudienceMapper audienceMapper;
+    private final AudienceService audienceService;
     private final AudienceSnapshotMapper snapshotMapper;
     private final AudienceSnapshotMemberMapper memberMapper;
     private final ContactMapper contactMapper;
@@ -96,7 +98,7 @@ public class WorkflowService {
                            WorkflowEdgeMapper edgeMapper, ExecutionMapper executionMapper,
                            DagValidator dagValidator, ConditionCompiler conditionCompiler,
                            DryRunExecutor dryRunExecutor, WorkflowExecutor workflowExecutor,
-                           AudienceMapper audienceMapper,
+                           AudienceMapper audienceMapper, AudienceService audienceService,
                            AudienceSnapshotMapper snapshotMapper,
                            AudienceSnapshotMemberMapper memberMapper, ContactMapper contactMapper,
                            ContactAttributeMapper attributeMapper, ContactTagMapper tagMapper,
@@ -112,6 +114,7 @@ public class WorkflowService {
         this.dryRunExecutor = dryRunExecutor;
         this.workflowExecutor = workflowExecutor;
         this.audienceMapper = audienceMapper;
+        this.audienceService = audienceService;
         this.snapshotMapper = snapshotMapper;
         this.memberMapper = memberMapper;
         this.contactMapper = contactMapper;
@@ -306,21 +309,21 @@ public class WorkflowService {
 
     /** 干跑：对已发布版本 + 冻结快照成员模拟执行；失败场景在报告内可见（execution=FAILED）。 */
     public DryRunResponse dryRun(Long id, DryRunRequest req) {
-        List<AbstractDagExecutor.MemberContext> members = executionPreamble(id, req, "干跑");
+        Preamble p = executionPreamble(id, req, "干跑");
         Workflow wf = publishedRow(id);
         WorkflowSnapshot ws = canvasOf(wf);
         AbstractDagExecutor.ExecutionReport report = dryRunExecutor.execute(wf, ws.nodes, ws.edges,
-                req.audienceSnapshotId(), members);
+                p.snapshotId(), p.members());
         return DryRunResponse.from(report, List.of());
     }
 
     /** 真实触达执行：与干跑同语义，ACTION 节点真实下发（治理/频率/幂等拦截计入 skipped）。 */
     public DryRunResponse execute(Long id, DryRunRequest req) {
-        List<AbstractDagExecutor.MemberContext> members = executionPreamble(id, req, "执行");
+        Preamble p = executionPreamble(id, req, "执行");
         Workflow wf = publishedRow(id);
         WorkflowSnapshot ws = canvasOf(wf);
         AbstractDagExecutor.ExecutionReport report = workflowExecutor.execute(wf, ws.nodes, ws.edges,
-                req.audienceSnapshotId(), members);
+                p.snapshotId(), p.members());
         return DryRunResponse.from(report, deliveriesOf(report.executionId()));
     }
 
@@ -367,7 +370,7 @@ public class WorkflowService {
         WorkflowSnapshot ws = canvasOf(wf);
         List<AbstractDagExecutor.MemberContext> members = loadMembers(snap);
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("audienceId", tc.audienceId());
+        payload.put("audienceId", snap.getAudienceId());
         payload.put("cron", tc.cron());
         payload.put("timezone", tc.timezone());
         payload.put("fireTime", fireTime.toString());
@@ -392,7 +395,7 @@ public class WorkflowService {
         WorkflowSnapshot ws = canvasOf(wf);
         List<AbstractDagExecutor.MemberContext> members = loadMembers(snap);
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("audienceId", tc.audienceId());
+        payload.put("audienceId", snap.getAudienceId());
         payload.put("fireTime", Instant.now().toString());
         workflowExecutor.execute(wf, ws.nodes, ws.edges, snapshotId, members, false,
                 TriggerType.IMMEDIATE.name(), payloadJson(payload));
@@ -422,8 +425,32 @@ public class WorkflowService {
         }
     }
 
-    /** 干跑/真实执行的公共前置校验：已发布版本 + 快照就绪，装配成员画像。 */
-    private List<AbstractDagExecutor.MemberContext> executionPreamble(Long id, DryRunRequest req, String action) {
+    /** 画布 AUDIENCE 人群节点配置的 audienceId；画布无节点 → null（触发配置兜底）。 */
+    public Long audienceIdOf(Workflow wf) {
+        WorkflowNode aud = nodeMapper.selectOne(new LambdaQueryWrapper<WorkflowNode>()
+                .eq(WorkflowNode::getWorkflowId, wf.getRefId())
+                .eq(WorkflowNode::getVersion, wf.getVersion())
+                .eq(WorkflowNode::getType, "AUDIENCE")
+                .last("LIMIT 1"));
+        if (aud == null || aud.getConfig() == null || aud.getConfig().isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode cfg = json.readTree(aud.getConfig());
+            long id = cfg.path("audienceId").asLong(0);
+            return id > 0 ? id : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private record Preamble(Long snapshotId, List<AbstractDagExecutor.MemberContext> members) {
+    }
+
+    /** 干跑/真实执行的公共前置校验：已发布版本 + 成员装配。
+     *  画布含 AUDIENCE 人群节点 → 按其 audienceId 圈选新快照（节点为批量成员来源）；
+     *  无 AUDIENCE 节点 → 回退请求参数 audienceSnapshotId（旧流程兼容）。 */
+    private Preamble executionPreamble(Long id, DryRunRequest req, String action) {
         Workflow wf = publishedRow(id);
         if (wf == null) {
             requireWorkflow(id); // 404（id 不存在）
@@ -433,20 +460,43 @@ public class WorkflowService {
         if (!errors.isEmpty()) {
             throw new BizException(ErrorCode.BAD_REQUEST, "画布校验不通过，请修正后重新发布: " + String.join("; ", errors));
         }
-        if (req == null || req.audienceSnapshotId() == null) {
-            throw new BizException(ErrorCode.BAD_REQUEST, action + "需要 audienceSnapshotId");
+        Long audienceId = audienceIdOf(wf);
+        Long snapshotId;
+        if (audienceId != null) {
+            snapshotId = audienceService.circle(audienceId).id();
+        } else {
+            if (req == null || req.audienceSnapshotId() == null) {
+                throw new BizException(ErrorCode.BAD_REQUEST, action + "需要 audienceSnapshotId");
+            }
+            snapshotId = req.audienceSnapshotId();
         }
-        AudienceSnapshot snap = snapshotMapper.selectById(req.audienceSnapshotId());
+        AudienceSnapshot snap = snapshotMapper.selectById(snapshotId);
         if (snap == null) {
-            throw new BizException(ErrorCode.NOT_FOUND, "快照不存在: " + req.audienceSnapshotId());
+            throw new BizException(ErrorCode.NOT_FOUND, "快照不存在: " + snapshotId);
         }
         if (!"ready".equals(snap.getStatus())) {
             throw new BizException(ErrorCode.BAD_REQUEST, "快照未就绪（当前: " + snap.getStatus() + "）");
         }
-        return loadMembers(snap);
+        return new Preamble(snapshotId, loadMembers(snap));
     }
 
     private record WorkflowSnapshot(List<WorkflowNode> nodes, List<WorkflowEdge> edges) {
+    }
+
+    /** 画布节点配置（视图层）：AUDIENCE 节点附加人群名供画布展示（不写库，仅响应）。 */
+    private JsonNode viewConfigOf(WorkflowNode n) {
+        JsonNode cfg = parse(n.getConfig());
+        if (!"AUDIENCE".equals(n.getType()) || cfg == null || !cfg.isObject()) {
+            return cfg;
+        }
+        long audienceId = cfg.path("audienceId").asLong(0);
+        Audience a = audienceId > 0 ? audienceMapper.selectById(audienceId) : null;
+        if (a == null) {
+            return cfg;
+        }
+        ObjectNode copy = ((ObjectNode) cfg).deepCopy();
+        copy.put("audienceName", a.getName());
+        return copy;
     }
 
     private WorkflowSnapshot canvasOf(Workflow wf) {
@@ -562,7 +612,7 @@ public class WorkflowService {
                         .eq(WorkflowEdge::getVersion, wf.getVersion()));
         List<WorkflowNodeSpec> nodeSpecs = nodes.stream()
                 .map(n -> new WorkflowNodeSpec(n.getNodeKey(), n.getType(), n.getName(),
-                        parse(n.getConfig()), parse(n.getPosition())))
+                        viewConfigOf(n), parse(n.getPosition())))
                 .toList();
         List<WorkflowEdgeSpec> edgeSpecs = edges.stream()
                 .map(e -> new WorkflowEdgeSpec(e.getSourceKey(), e.getTargetKey(), parse(e.getCondition())))
@@ -580,7 +630,19 @@ public class WorkflowService {
                 .map(e -> new DagValidator.EdgeDef(e.source(), e.target(), e.condition()))
                 .toList();
         List<String> errors = new ArrayList<>(dagValidator.validate(ndefs, edefs).errors());
+        long audienceNodes = ndefs.stream().filter(n -> "AUDIENCE".equals(n.type())).count();
+        if (audienceNodes > 1) {
+            errors.add("画布至多允许 1 个 AUDIENCE 人群节点");
+        }
         for (DagValidator.NodeDef n : ndefs) {
+            if ("AUDIENCE".equals(n.type())) {
+                long audienceId = n.config() == null ? 0 : n.config().path("audienceId").asLong(0);
+                if (audienceId <= 0) {
+                    errors.add("AUDIENCE 节点 " + n.key() + " 缺少 audienceId 配置");
+                } else if (audienceMapper.selectById(audienceId) == null) {
+                    errors.add("AUDIENCE 节点 " + n.key() + " 人群不存在: " + audienceId);
+                }
+            }
             if ("ACTION".equals(n.type())) {
                 String channel = n.config() == null ? null : n.config().path("channel").asText(null);
                 long templateId = n.config() == null ? 0 : n.config().path("templateId").asLong(0);
@@ -596,10 +658,10 @@ public class WorkflowService {
                 if (tc.isScheduled() && (tc.cron() == null || tc.cron().isBlank())) {
                     errors.add("TRIGGER 节点 " + n.key() + " 定时触发缺少 cron 配置");
                 }
-                if (tc.isScheduled() && tc.audienceId() == null) {
+                if (tc.isScheduled() && tc.audienceId() == null && audienceNodes == 0) {
                     errors.add("TRIGGER 节点 " + n.key() + " 定时触发缺少 audienceId 配置");
                 }
-                if (tc.isImmediate() && tc.audienceId() == null) {
+                if (tc.isImmediate() && tc.audienceId() == null && audienceNodes == 0) {
                     errors.add("TRIGGER 节点 " + n.key() + " 立即触发缺少 audienceId 配置");
                 }
                 if (tc.isEvent() && (tc.eventName() == null || tc.eventName().isBlank())) {

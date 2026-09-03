@@ -37,6 +37,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -55,10 +56,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * 断言：
  *   API 触发 → execution.trigger_type='API'，单用户入流，ACTION 真实触达落 delivery_record；
  *   事件触发 → 导入事件匹配 EVENT 流程单用户执行（trigger_type='EVENT'），eventFilter 不命中不执行；
- *   定时触发 → 到点圈选快照批量执行（trigger_type='SCHEDULED'，audience_snapshot_id 落库，member 触达）；
+ *   定时触发 → 到点按画布 AUDIENCE 人群节点圈选快照批量执行（trigger_type='SCHEDULED'，audience_snapshot_id 落库，member 触达）；
  *   防双跑 → 同 cron 槽位连续两次轮询仅产生一条 execution（RLock + 槽位记录）；
- *   立即触发 → 发布成功后即刻圈选快照批量执行（trigger_type='IMMEDIATE'），每次发布执行一次；
- *   缺 audienceId 的 IMMEDIATE 画布保存即被校验拒绝。
+ *   立即触发 → 发布成功后即刻按画布人群节点圈选快照批量执行（trigger_type='IMMEDIATE'），每次发布执行一次；
+ *   批量成员一律来自画布 AUDIENCE 人群节点：无该节点的 SCHEDULED/IMMEDIATE 画布保存即被校验拒绝。
  * 数据访问一律走 MyBatis-Plus mapper，禁 JdbcTemplate。
  */
 @Testcontainers
@@ -218,7 +219,7 @@ class M6TriggerTests {
         long template = createTemplate("sms", "短信关怀", "Hi ${name!}");
         long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
         long wf = saveCanvas(Map.of("triggerType", "SCHEDULED", "cron", "* * * * * ?",
-                "audienceId", audience, "timezone", "Asia/Shanghai"), template);
+                "timezone", "Asia/Shanghai"), template, audience);
         publish(wf);
         // 回拨 published_at 使 cron 已到点，本次轮询即触发（不依赖等待真实时钟）
         inTenant(() -> workflowMapper.testBackdatePublishedAt(wf, 2));
@@ -255,7 +256,7 @@ class M6TriggerTests {
         // cron 固定到 2000-01-01 00:00 这一个历史时刻：published_at 回拨到 1999 年 → 该槽位必然已到期；
         // 触发后 last 槽位 = 该时刻，next 超出 cron 年份范围 → 第二次轮询必然不再触发（不依赖墙钟）。
         long wf = saveCanvas(Map.of("triggerType", "SCHEDULED", "cron", "0 0 0 1 1 ? 2000",
-                "audienceId", audience, "timezone", "Asia/Shanghai"), template);
+                "timezone", "Asia/Shanghai"), template, audience);
         publish(wf);
         inTenant(() -> workflowMapper.testSetPublishedAt(wf, "1999-01-01T00:00:00Z"));
 
@@ -272,7 +273,7 @@ class M6TriggerTests {
         createContact(contact("imm-user", "13400000022", null, highRisk("立即")));
         long template = createTemplate("sms", "短信关怀", "Hi ${name!}");
         long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
-        long wf = saveCanvas(Map.of("triggerType", "IMMEDIATE", "audienceId", audience), template);
+        long wf = saveCanvas(Map.of("triggerType", "IMMEDIATE"), template, audience);
 
         publish(wf);
 
@@ -302,7 +303,7 @@ class M6TriggerTests {
         createContact(contact("imm-fail", null, null, highRisk("失败")));
         long template = createTemplate("sms", "短信关怀", "Hi ${name!}");
         long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
-        long wf = saveCanvas(Map.of("triggerType", "IMMEDIATE", "audienceId", audience), template);
+        long wf = saveCanvas(Map.of("triggerType", "IMMEDIATE"), template, audience);
         mvc.perform(put("/api/channel-configs/sms").header(AUTH, bearer())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(asJson(Map.of("config", Map.of("endpoint", "http://127.0.0.1:9/send"), "enabled", true))))
@@ -331,8 +332,8 @@ class M6TriggerTests {
         createContact(contact("imm2-user", "13400000021", null, highRisk("再发布")));
         long template = createTemplate("sms", "短信关怀", "Hi ${name!}");
         long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
-        Map<String, Object> trigger = Map.of("triggerType", "IMMEDIATE", "audienceId", audience);
-        String body = canvasBody("m6-imm2", "再发布", trigger, template);
+        Map<String, Object> trigger = Map.of("triggerType", "IMMEDIATE");
+        String body = canvasBody("m6-imm2", "再发布", trigger, template, audience);
         String s = mvc.perform(post("/api/workflows").header(AUTH, bearer())
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk())
@@ -361,7 +362,7 @@ class M6TriggerTests {
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value(
-                        org.hamcrest.Matchers.containsString("立即触发缺少 audienceId 配置")));
+                        org.hamcrest.Matchers.containsString("立即触发缺少 AUDIENCE 人群节点")));
     }
 
     // ---------- helpers ----------
@@ -407,9 +408,13 @@ class M6TriggerTests {
     }
 
     private long saveCanvas(Object triggerConfig, long templateId) throws Exception {
+        return saveCanvas(triggerConfig, templateId, 0);
+    }
+
+    private long saveCanvas(Object triggerConfig, long templateId, long audienceId) throws Exception {
         String s = mvc.perform(post("/api/workflows").header(AUTH, bearer())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(canvasBody("m6-trigger", "触发双模式", triggerConfig, templateId)))
+                        .content(canvasBody("m6-trigger", "触发双模式", triggerConfig, templateId, audienceId)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
                 .andReturn().getResponse().getContentAsString();
@@ -417,16 +422,31 @@ class M6TriggerTests {
     }
 
     private String canvasBody(String name, String description, Object triggerConfig, long templateId) {
+        return canvasBody(name, description, triggerConfig, templateId, 0);
+    }
+
+    /** 批量成员来源：画布 AUDIENCE 人群节点（audienceId>0 时挂节点，TRIGGER 不再配置人群）。 */
+    private String canvasBody(String name, String description, Object triggerConfig, long templateId, long audienceId) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("name", name);
         m.put("description", description);
-        m.put("nodes", List.of(
-                node("trigger", "TRIGGER", "开始", triggerConfig),
-                node("act1", "ACTION", "发送短信", Map.of("channel", "sms", "templateId", templateId, "unitCost", 0.05)),
-                node("end", "END", "结束", null)));
-        m.put("edges", List.of(
-                edge("trigger", "act1", null),
-                edge("act1", "end", null)));
+        List<Map<String, Object>> nodes = new ArrayList<>();
+        nodes.add(node("trigger", "TRIGGER", "开始", triggerConfig));
+        if (audienceId > 0) {
+            nodes.add(node("aud1", "AUDIENCE", "圈选人群", Map.of("audienceId", audienceId)));
+        }
+        nodes.add(node("act1", "ACTION", "发送短信", Map.of("channel", "sms", "templateId", templateId, "unitCost", 0.05)));
+        nodes.add(node("end", "END", "结束", null));
+        m.put("nodes", nodes);
+        List<Map<String, Object>> edges = new ArrayList<>();
+        edges.add(edge("trigger", "act1", null));
+        if (audienceId > 0) {
+            edges.add(edge("act1", "aud1", null));
+            edges.add(edge("aud1", "end", null));
+        } else {
+            edges.add(edge("act1", "end", null));
+        }
+        m.put("edges", edges);
         return asJson(m);
     }
 

@@ -20,6 +20,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -88,13 +89,13 @@ class M2WorkflowTests {
         // 1) 保存画布 → v1 DRAFT，节点/边回显
         String body = mvc.perform(post("/api/workflows").header(AUTH, bearer())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(canvasBody("churn-push", "回归关怀")))
+                        .content(canvasBody("churn-push", "回归关怀", audience)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.status").value("draft"))
                 .andExpect(jsonPath("$.data.version").value(1))
-                .andExpect(jsonPath("$.data.nodes.length()").value(5))
-                .andExpect(jsonPath("$.data.edges.length()").value(5))
+                .andExpect(jsonPath("$.data.nodes.length()").value(6))
+                .andExpect(jsonPath("$.data.edges.length()").value(6))
                 .andReturn().getResponse().getContentAsString();
         long workflowId = Long.parseLong(JsonPath.read(body, "$.data.id").toString());
 
@@ -111,9 +112,7 @@ class M2WorkflowTests {
                 .andExpect(jsonPath("$.data.publishedAt").exists());
 
         // 4) 干跑 → 成功 + 各节点人数
-        MvcResult dr = mvc.perform(post("/api/workflows/{id}/dry-run", workflowId).header(AUTH, bearer())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"audienceSnapshotId\":" + snapshot + "}"))
+        MvcResult dr = mvc.perform(post("/api/workflows/{id}/dry-run", workflowId).header(AUTH, bearer()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("SUCCEEDED"))
                 .andExpect(jsonPath("$.data.error").doesNotExist())
@@ -152,13 +151,11 @@ class M2WorkflowTests {
         long snapshot = circle(audience);
         assertThat(membersOf(snapshot)).hasSize(2);
 
-        long wf = saveCanvas();
+        long wf = saveCanvas(audience);
         mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk());
 
-        mvc.perform(post("/api/workflows/{id}/dry-run", wf).header(AUTH, bearer())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"audienceSnapshotId\":" + snapshot + "}"))
+        mvc.perform(post("/api/workflows/{id}/dry-run", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalMembers").value(2))
                 .andExpect(jsonPath("$.data.nodes[?(@.key=='sms')].contacts").value(1))
@@ -178,13 +175,13 @@ class M2WorkflowTests {
         assertThat(membersOf(snapshot)).hasSize(2);
 
         // 条件边 percentage=50（按 contact.id 稳定哈希分流），兜底 else → push
-        long wf = savePctCanvas(50);
+        long wf = savePctCanvas(50, audience);
         mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk());
 
         // 两次干跑分流人数一致（确定性），且不丢人：sms + push = 2
-        String r1 = dryRunBody(wf, snapshot);
-        String r2 = dryRunBody(wf, snapshot);
+        String r1 = dryRunBody(wf);
+        String r2 = dryRunBody(wf);
         int sms1 = nodeContacts(r1, "sms");
         int push1 = nodeContacts(r1, "push");
         int sms2 = nodeContacts(r2, "sms");
@@ -195,17 +192,17 @@ class M2WorkflowTests {
         assertThat(push1).isEqualTo(push2);
 
         // 边界：percentage=0 全走兜底（push），100 全走条件边（sms）
-        long wf0 = savePctCanvas(0);
+        long wf0 = savePctCanvas(0, audience);
         mvc.perform(post("/api/workflows/{id}/publish", wf0).header(AUTH, bearer()))
                 .andExpect(status().isOk());
-        String r0 = dryRunBody(wf0, snapshot);
+        String r0 = dryRunBody(wf0);
         assertThat(nodeContacts(r0, "sms")).isEqualTo(0);
         assertThat(nodeContacts(r0, "push")).isEqualTo(2);
 
-        long wf100 = savePctCanvas(100);
+        long wf100 = savePctCanvas(100, audience);
         mvc.perform(post("/api/workflows/{id}/publish", wf100).header(AUTH, bearer()))
                 .andExpect(status().isOk());
-        String r100 = dryRunBody(wf100, snapshot);
+        String r100 = dryRunBody(wf100);
         assertThat(nodeContacts(r100, "sms")).isEqualTo(2);
         assertThat(nodeContacts(r100, "push")).isEqualTo(0);
     }
@@ -300,16 +297,11 @@ class M2WorkflowTests {
     }
 
     @Test
-    void dryRunRejectsUnpublishedAndMissingSnapshot() throws Exception {
+    void dryRunRejectsUnpublishedAndMissingAudienceNode() throws Exception {
         long wf = saveCanvas();
-        long audience = createAudience("any",
-                rule("AND", List.of(condNoValue("attribute.churn_risk", "exists"))));
-        long snapshot = circle(audience);
 
         // 未发布干跑 → 400
-        mvc.perform(post("/api/workflows/{id}/dry-run", wf).header(AUTH, bearer())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"audienceSnapshotId\":" + snapshot + "}"))
+        mvc.perform(post("/api/workflows/{id}/dry-run", wf).header(AUTH, bearer()))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value(
                         org.hamcrest.Matchers.containsString("请先发布")));
@@ -317,32 +309,33 @@ class M2WorkflowTests {
         mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk());
 
-        // 快照不存在 → 404
-        mvc.perform(post("/api/workflows/{id}/dry-run", wf).header(AUTH, bearer())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"audienceSnapshotId\":999999999}"))
-                .andExpect(status().isNotFound());
+        // 画布无 AUDIENCE 人群节点 → 400（成员必须由节点圈选，无快照参数回退）
+        mvc.perform(post("/api/workflows/{id}/dry-run", wf).header(AUTH, bearer()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("缺少 AUDIENCE 人群节点")));
     }
 
     // ---------- helpers ----------
 
-    /** TRIGGER → CONDITION(percentage 条件边 → sms / 兜底 → push) → END 画布。 */
-    private long savePctCanvas(int pct) throws Exception {
+    /** TRIGGER → AUDIENCE → CONDITION(percentage 条件边 → sms / 兜底 → push) → END 画布。 */
+    private long savePctCanvas(int pct, long audienceId) throws Exception {
         String s = mvc.perform(post("/api/workflows").header(AUTH, bearer())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(pctCanvasBody(pct)))
+                        .content(pctCanvasBody(pct, audienceId)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
                 .andReturn().getResponse().getContentAsString();
         return Long.parseLong(JsonPath.read(s, "$.data.id").toString());
     }
 
-    private String pctCanvasBody(int pct) {
+    private String pctCanvasBody(int pct, long audienceId) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("name", "ab-split-" + pct);
         m.put("description", "AB 分流");
         m.put("nodes", List.of(
                 node("trigger", "TRIGGER", "开始", null),
+                node("aud", "AUDIENCE", "人群圈选", Map.of("audienceId", audienceId)),
                 node("cond", "CONDITION", "百分比分流", null),
                 node("sms", "ACTION", "短信",
                         Map.of("channel", "sms", "templateId", 1, "unitCost", 0.05)),
@@ -350,7 +343,8 @@ class M2WorkflowTests {
                         Map.of("channel", "push", "templateId", 2)),
                 node("end", "END", "结束", null)));
         m.put("edges", List.of(
-                edge("trigger", "cond", null),
+                edge("trigger", "aud", null),
+                edge("aud", "cond", null),
                 edge("cond", "sms", "{\"op\":\"AND\",\"items\":[{\"field\":\"contact.id\",\"op\":\"percentage\",\"value\":" + pct + "}]}"),
                 edge("cond", "push", null),
                 edge("sms", "end", null),
@@ -358,10 +352,8 @@ class M2WorkflowTests {
         return asJson(m);
     }
 
-    private String dryRunBody(long wf, long snapshot) throws Exception {
-        return mvc.perform(post("/api/workflows/{id}/dry-run", wf).header(AUTH, bearer())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"audienceSnapshotId\":" + snapshot + "}"))
+    private String dryRunBody(long wf) throws Exception {
+        return mvc.perform(post("/api/workflows/{id}/dry-run", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
     }
@@ -374,7 +366,7 @@ class M2WorkflowTests {
         return 0;
     }
 
-    /** TRIGGER → CONDITION(条件边 高流失→sms / 兜底→push) → END 画布。 */
+    /** TRIGGER → CONDITION(条件边 高流失→sms / 兜底→push) → END 画布（无 AUDIENCE 节点，MANUAL 触发）。 */
     private long saveCanvas() throws Exception {
         String s = mvc.perform(post("/api/workflows").header(AUTH, bearer())
                         .contentType(MediaType.APPLICATION_JSON)
@@ -385,24 +377,48 @@ class M2WorkflowTests {
         return Long.parseLong(JsonPath.read(s, "$.data.id").toString());
     }
 
+    /** 干跑/执行场景：画布挂 AUDIENCE 人群节点（批量成员来源）。 */
+    private long saveCanvas(long audienceId) throws Exception {
+        String s = mvc.perform(post("/api/workflows").header(AUTH, bearer())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(canvasBody("churn-push", "回归关怀", audienceId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andReturn().getResponse().getContentAsString();
+        return Long.parseLong(JsonPath.read(s, "$.data.id").toString());
+    }
+
     private String canvasBody(String name, String description) {
+        return canvasBody(name, description, 0);
+    }
+
+    /** 画布含 AUDIENCE 节点：trigger → aud → cond 分流 → end。 */
+    private String canvasBody(String name, String description, long audienceId) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("name", name);
         m.put("description", description);
-        m.put("nodes", List.of(
-                node("trigger", "TRIGGER", "开始", null),
-                node("cond", "CONDITION", "高流失分流", null),
-                node("sms", "ACTION", "短信",
-                        Map.of("channel", "sms", "templateId", 1, "unitCost", 0.05)),
-                node("push", "ACTION", "推送",
-                        Map.of("channel", "push", "templateId", 2)),
-                node("end", "END", "结束", null)));
-        m.put("edges", List.of(
-                edge("trigger", "cond", null),
-                edge("cond", "sms", "{\"op\":\"AND\",\"items\":[{\"field\":\"contact.churn_risk\",\"op\":\"equals\",\"value\":\"HIGH\"}]}"),
-                edge("cond", "push", null),
-                edge("sms", "end", null),
-                edge("push", "end", null)));
+        List<Map<String, Object>> nodes = new ArrayList<>();
+        nodes.add(node("trigger", "TRIGGER", "开始", null));
+        if (audienceId > 0) {
+            nodes.add(node("aud", "AUDIENCE", "人群圈选", Map.of("audienceId", audienceId)));
+        }
+        nodes.add(node("cond", "CONDITION", "高流失分流", null));
+        nodes.add(node("sms", "ACTION", "短信",
+                Map.of("channel", "sms", "templateId", 1, "unitCost", 0.05)));
+        nodes.add(node("push", "ACTION", "推送",
+                Map.of("channel", "push", "templateId", 2)));
+        nodes.add(node("end", "END", "结束", null));
+        List<Map<String, Object>> edges = new ArrayList<>();
+        edges.add(audienceId > 0 ? edge("trigger", "aud", null) : edge("trigger", "cond", null));
+        if (audienceId > 0) {
+            edges.add(edge("aud", "cond", null));
+        }
+        edges.add(edge("cond", "sms", "{\"op\":\"AND\",\"items\":[{\"field\":\"contact.churn_risk\",\"op\":\"equals\",\"value\":\"HIGH\"}]}"));
+        edges.add(edge("cond", "push", null));
+        edges.add(edge("sms", "end", null));
+        edges.add(edge("push", "end", null));
+        m.put("nodes", nodes);
+        m.put("edges", edges);
         return asJson(m);
     }
 

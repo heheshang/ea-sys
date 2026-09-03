@@ -124,15 +124,12 @@ class M4AgentTests {
         long b = createContact(contact("B", null, "b@example.com", highRisk("王芳")));
         long c = createContact(contact("C", "13800000003", "c@example.com", highRisk("李静")));
         long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
-        long snapshot = circle(audience);
         createTemplate("sms", "短信关怀", "亲爱的${name!}，欢迎回来");
-        long wf = saveCanvas();
+        long wf = saveCanvas(audience);
         mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk());
 
-        String body = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"audienceSnapshotId\":" + snapshot + "}"))
+        String body = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("SUCCEEDED"))
                 .andExpect(jsonPath("$.data.totalMembers").value(3))
@@ -166,15 +163,12 @@ class M4AgentTests {
     void noChannelMemberFallsBackToElseEdge() throws Exception {
         long d = createContact(contact("D", null, null, highRisk("赵敏")));
         long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
-        long snapshot = circle(audience);
         createTemplate("sms", "短信关怀", "亲爱的${name!}，欢迎回来");
-        long wf = saveCanvas();
+        long wf = saveCanvas(audience);
         mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk());
 
-        String body = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"audienceSnapshotId\":" + snapshot + "}"))
+        String body = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("SUCCEEDED"))
                 .andExpect(jsonPath("$.data.nodes[?(@.key=='split')].output.byLayer.L4").value(1))
@@ -196,15 +190,12 @@ class M4AgentTests {
     void dryRunWritesNoAttributesNoAuditNoDelivery() throws Exception {
         createContact(contact("A", "13800000001", null, highRisk("张伟")));
         long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
-        long snapshot = circle(audience);
         createTemplate("sms", "短信关怀", "亲爱的${name!}，欢迎回来");
-        long wf = saveCanvas();
+        long wf = saveCanvas(audience);
         mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk());
 
-        mvc.perform(post("/api/workflows/{id}/dry-run", wf).header(AUTH, bearer())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"audienceSnapshotId\":" + snapshot + "}"))
+        mvc.perform(post("/api/workflows/{id}/dry-run", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("SUCCEEDED"))
                 .andExpect(jsonPath("$.data.dryRun").value(true))
@@ -270,14 +261,11 @@ class M4AgentTests {
     void routeSplitAuditWrittenOnRealExecute() throws Exception {
         createContact(contact("A", "13800000001", null, highRisk("张伟")));
         long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
-        long snapshot = circle(audience);
         createTemplate("sms", "短信关怀", "亲爱的${name!}，欢迎回来");
-        long wf = saveCanvas();
+        long wf = saveCanvas(audience);
         mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk());
-        mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"audienceSnapshotId\":" + snapshot + "}"))
+        mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk());
 
         Long rows = inTenant(() -> agentAuditMapper.selectCount(
@@ -299,14 +287,11 @@ class M4AgentTests {
         // 不入 HIGH 受众 → 无触达史
         long untouched = createContact(contact("E", "13800000005", null, Map.of("name", "周杰")));
         long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
-        long snapshot = circle(audience);
         createTemplate("sms", "短信关怀", "亲爱的${name!}，欢迎回来");
-        long wf = saveCanvas();
+        long wf = saveCanvas(audience);
         mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk());
-        mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"audienceSnapshotId\":" + snapshot + "}"))
+        mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk());
 
         // A 近 24h 已触达 sms → sms 后置：["sms","email"] → ["email","sms"]
@@ -406,15 +391,12 @@ class M4AgentTests {
         long b = createContact(contact("B", null, "b@example.com", highRisk("王芳")));
         long c = createContact(contact("C", "13800000003", "c@example.com", highRisk("李静")));
         long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
-        long snapshot = circle(audience);
         createTemplate("sms", "短信关怀", "亲爱的${name!}，欢迎回来");
-        long wf = saveCanvas();
+        long wf = saveCanvas(audience);
         mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk());
 
-        String body = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"audienceSnapshotId\":" + snapshot + "}"))
+        String body = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("SUCCEEDED"))
                 // 双通道 C→L1→sms1；仅短信 A→L3→sms3；仅邮件 B→L4→无 L4 出边→无条件兜底 end
@@ -472,29 +454,32 @@ class M4AgentTests {
                 .stream().map(ca -> ca.getValue().replaceAll("^\"|\"$", "")).toList();
     }
 
-    private long saveCanvas() throws Exception {
+    private long saveCanvas(long audienceId) throws Exception {
         String s = mvc.perform(post("/api/workflows").header(AUTH, bearer())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(canvasBody("m4-split", "分层分流")))
+                        .content(canvasBody("m4-split", "分层分流", audienceId)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
                 .andReturn().getResponse().getContentAsString();
         return Long.parseLong(JsonPath.read(s, "$.data.id").toString());
     }
 
-    private String canvasBody(String name, String description) {
+    /** 画布含 AUDIENCE 人群节点：批量成员来源一律由节点圈选。 */
+    private String canvasBody(String name, String description, long audienceId) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("name", name);
         m.put("description", description);
         m.put("nodes", List.of(
                 node("trigger", "TRIGGER", "开始", null),
+                node("aud", "AUDIENCE", "人群圈选", Map.of("audienceId", audienceId)),
                 node("split", "AGENT_SPLIT", "分层分流", null),
                 node("sms1", "ACTION", "短信-L1", Map.of("channel", "sms", "templateId", 1, "unitCost", 0.05)),
                 node("sms2", "ACTION", "短信-L2", Map.of("channel", "sms", "templateId", 1, "unitCost", 0.05)),
                 node("sms3", "ACTION", "短信-L3", Map.of("channel", "sms", "templateId", 1, "unitCost", 0.05)),
                 node("end", "END", "结束", null)));
         m.put("edges", List.of(
-                edge("trigger", "split", null),
+                edge("trigger", "aud", null),
+                edge("aud", "split", null),
                 edge("split", "sms1", "{\"op\":\"AND\",\"items\":[{\"op\":\"equals\",\"field\":\"contact.layer\",\"value\":\"L1\"}]}"),
                 edge("split", "sms2", "{\"op\":\"AND\",\"items\":[{\"op\":\"equals\",\"field\":\"contact.layer\",\"value\":\"L2\"}]}"),
                 edge("split", "sms3", "{\"op\":\"AND\",\"items\":[{\"op\":\"equals\",\"field\":\"contact.layer\",\"value\":\"L3\"}]}"),

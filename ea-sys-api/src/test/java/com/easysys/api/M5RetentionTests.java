@@ -155,12 +155,10 @@ class M5RetentionTests {
         long snapshot = circle(audience);
         assertThat(inTenant(() -> audienceSnapshotMapper.selectById(snapshot)).getMemberCount()).isEqualTo(3);
         createTemplate("sms", "短信关怀", "亲爱的${name!}，欢迎回来");
-        long wf = saveSmokeCanvas("m5-funnel", "漏斗冒烟");
+        long wf = saveSmokeCanvas("m5-funnel", "漏斗冒烟", audience);
         mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk());
-        String exec = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"audienceSnapshotId\":" + snapshot + "}"))
+        String exec = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("SUCCEEDED"))
                 .andReturn().getResponse().getContentAsString();
@@ -214,14 +212,11 @@ class M5RetentionTests {
         createContact(contact("B", "13800000002", null, highRisk("王芳")));
         createContact(contact("C", "13800000003", null, highRisk("李静")));
         long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
-        long snapshot = circle(audience);
         createTemplate("sms", "短信关怀", "亲爱的${name!}，欢迎回来");
-        long wf = saveSmokeCanvas("m5-channel", "渠道效果");
+        long wf = saveSmokeCanvas("m5-channel", "渠道效果", audience);
         mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk());
-        String exec = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"audienceSnapshotId\":" + snapshot + "}"))
+        String exec = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("SUCCEEDED"))
                 .andReturn().getResponse().getContentAsString();
@@ -247,14 +242,11 @@ class M5RetentionTests {
         long b = createContact(contact("B", "13800000002", null, highRisk("王芳")));
         createContact(contact("C", "13800000003", null, highRisk("李静")));
         long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
-        long snapshot = circle(audience);
         createTemplate("sms", "短信关怀", "亲爱的${name!}，欢迎回来");
-        long wf = saveSmokeCanvas("m5-effect", "工作流效果");
+        long wf = saveSmokeCanvas("m5-effect", "工作流效果", audience);
         mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk());
-        String exec = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"audienceSnapshotId\":" + snapshot + "}"))
+        String exec = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("SUCCEEDED"))
                 .andReturn().getResponse().getContentAsString();
@@ -332,26 +324,29 @@ class M5RetentionTests {
                 .stream().map(ca -> ca.getValue().replaceAll("^\"|\"$", "")).toList();
     }
 
-    private long saveSmokeCanvas(String name, String description) throws Exception {
+    private long saveSmokeCanvas(String name, String description, long audienceId) throws Exception {
         String s = mvc.perform(post("/api/workflows").header(AUTH, bearer())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(canvasBody(name, description)))
+                        .content(canvasBody(name, description, audienceId)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
                 .andReturn().getResponse().getContentAsString();
         return Long.parseLong(JsonPath.read(s, "$.data.id").toString());
     }
 
-    private String canvasBody(String name, String description) {
+    /** 画布含 AUDIENCE 人群节点：批量成员来源一律由节点圈选。 */
+    private String canvasBody(String name, String description, long audienceId) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("name", name);
         m.put("description", description);
         m.put("nodes", List.of(
                 node("trigger", "TRIGGER", "开始", null),
+                node("aud", "AUDIENCE", "人群圈选", Map.of("audienceId", audienceId)),
                 node("send", "ACTION", "短信下发", Map.of("channel", "sms", "templateId", 1, "unitCost", 0.05)),
                 node("end", "END", "结束", null)));
         m.put("edges", List.of(
-                edge("trigger", "send", null),
+                edge("trigger", "aud", null),
+                edge("aud", "send", null),
                 edge("send", "end", null)));
         return asJson(m);
     }

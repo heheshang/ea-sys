@@ -3,7 +3,6 @@ package com.easysys.api.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.easysys.api.dto.audience.SnapshotResponse;
 import com.easysys.api.dto.workflow.DeliveryLogView;
-import com.easysys.api.dto.workflow.DryRunRequest;
 import com.easysys.api.dto.workflow.DryRunResponse;
 import com.easysys.api.dto.workflow.ExecutionSummaryView;
 import com.easysys.api.dto.workflow.SaveWorkflowRequest;
@@ -308,8 +307,8 @@ public class WorkflowService {
     }
 
     /** 干跑：对已发布版本 + 冻结快照成员模拟执行；失败场景在报告内可见（execution=FAILED）。 */
-    public DryRunResponse dryRun(Long id, DryRunRequest req) {
-        Preamble p = executionPreamble(id, req, "干跑");
+    public DryRunResponse dryRun(Long id) {
+        Preamble p = executionPreamble(id, "干跑");
         Workflow wf = publishedRow(id);
         WorkflowSnapshot ws = canvasOf(wf);
         AbstractDagExecutor.ExecutionReport report = dryRunExecutor.execute(wf, ws.nodes, ws.edges,
@@ -318,8 +317,8 @@ public class WorkflowService {
     }
 
     /** 真实触达执行：与干跑同语义，ACTION 节点真实下发（治理/频率/幂等拦截计入 skipped）。 */
-    public DryRunResponse execute(Long id, DryRunRequest req) {
-        Preamble p = executionPreamble(id, req, "执行");
+    public DryRunResponse execute(Long id) {
+        Preamble p = executionPreamble(id, "执行");
         Workflow wf = publishedRow(id);
         WorkflowSnapshot ws = canvasOf(wf);
         AbstractDagExecutor.ExecutionReport report = workflowExecutor.execute(wf, ws.nodes, ws.edges,
@@ -448,9 +447,8 @@ public class WorkflowService {
     }
 
     /** 干跑/真实执行的公共前置校验：已发布版本 + 成员装配。
-     *  画布含 AUDIENCE 人群节点 → 按其 audienceId 圈选新快照（节点为批量成员来源）；
-     *  无 AUDIENCE 节点 → 回退请求参数 audienceSnapshotId（旧流程兼容）。 */
-    private Preamble executionPreamble(Long id, DryRunRequest req, String action) {
+     *  批量成员一律来自画布 AUDIENCE 人群节点圈选；画布无该节点 → 拒绝执行。 */
+    private Preamble executionPreamble(Long id, String action) {
         Workflow wf = publishedRow(id);
         if (wf == null) {
             requireWorkflow(id); // 404（id 不存在）
@@ -461,15 +459,11 @@ public class WorkflowService {
             throw new BizException(ErrorCode.BAD_REQUEST, "画布校验不通过，请修正后重新发布: " + String.join("; ", errors));
         }
         Long audienceId = audienceIdOf(wf);
-        Long snapshotId;
-        if (audienceId != null) {
-            snapshotId = audienceService.circle(audienceId).id();
-        } else {
-            if (req == null || req.audienceSnapshotId() == null) {
-                throw new BizException(ErrorCode.BAD_REQUEST, action + "需要 audienceSnapshotId");
-            }
-            snapshotId = req.audienceSnapshotId();
+        if (audienceId == null) {
+            throw new BizException(ErrorCode.BAD_REQUEST,
+                    action + "缺少 AUDIENCE 人群节点，批量成员须由画布人群节点圈选");
         }
+        Long snapshotId = audienceService.circle(audienceId).id();
         AudienceSnapshot snap = snapshotMapper.selectById(snapshotId);
         if (snap == null) {
             throw new BizException(ErrorCode.NOT_FOUND, "快照不存在: " + snapshotId);
@@ -658,11 +652,11 @@ public class WorkflowService {
                 if (tc.isScheduled() && (tc.cron() == null || tc.cron().isBlank())) {
                     errors.add("TRIGGER 节点 " + n.key() + " 定时触发缺少 cron 配置");
                 }
-                if (tc.isScheduled() && tc.audienceId() == null && audienceNodes == 0) {
-                    errors.add("TRIGGER 节点 " + n.key() + " 定时触发缺少 audienceId 配置");
+                if (tc.isScheduled() && audienceNodes == 0) {
+                    errors.add("TRIGGER 节点 " + n.key() + " 定时触发缺少 AUDIENCE 人群节点（批量成员须由画布人群节点圈选）");
                 }
-                if (tc.isImmediate() && tc.audienceId() == null && audienceNodes == 0) {
-                    errors.add("TRIGGER 节点 " + n.key() + " 立即触发缺少 audienceId 配置");
+                if (tc.isImmediate() && audienceNodes == 0) {
+                    errors.add("TRIGGER 节点 " + n.key() + " 立即触发缺少 AUDIENCE 人群节点（批量成员须由画布人群节点圈选）");
                 }
                 if (tc.isEvent() && (tc.eventName() == null || tc.eventName().isBlank())) {
                     errors.add("TRIGGER 节点 " + n.key() + " 事件触发缺少 eventName 配置");

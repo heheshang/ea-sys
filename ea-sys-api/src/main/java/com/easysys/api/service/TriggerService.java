@@ -90,7 +90,7 @@ public class TriggerService {
                     if (tc.isScheduled()) {
                         Instant due = nextDue(wf, tc);
                         if (due != null) {
-                            Long audienceId = audienceIdOf(wf, tc);
+                            Long audienceId = workflowService.audienceIdOf(wf);
                             if (audienceId != null) {
                                 SnapshotResponse snap = audienceService.circle(audienceId);
                                 workflowService.executeScheduled(wf, tc, snap.id(), due);
@@ -180,9 +180,9 @@ public class TriggerService {
         if (!tc.isImmediate()) {
             return; // 非立即触发 → 静默跳过，发布不阻断
         }
-        Long audienceId = audienceIdOf(wf, tc);
+        Long audienceId = workflowService.audienceIdOf(wf);
         if (audienceId == null) {
-            return; // 缺人群（画布无 AUDIENCE 节点且 TRIGGER 未配置）→ 静默跳过
+            return; // 画布无 AUDIENCE 人群节点 → 静默跳过（成员须由画布人群节点圈选）
         }
         try {
             SnapshotResponse snap = audienceService.circle(audienceId);
@@ -204,12 +204,6 @@ public class TriggerService {
             throw new BizException(ErrorCode.NOT_FOUND, "已发布工作流不存在: " + refId);
         }
         workflowService.executeSingle(wf, contactId, payload, TriggerType.API.name());
-    }
-
-    /** 批量成员来源 audienceId：画布 AUDIENCE 人群节点优先，否则 TRIGGER 配置（旧流程兜底）。 */
-    private Long audienceIdOf(Workflow wf, TriggerConfig tc) {
-        Long fromNode = workflowService.audienceIdOf(wf);
-        return fromNode != null ? fromNode : tc.audienceId();
     }
 
     /** 读取某已发布流程（refId+version）TRIGGER 节点的触发配置；无 TRIGGER → 默认 MANUAL。 */

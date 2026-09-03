@@ -39,9 +39,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * M7 验收：AUDIENCE 人群节点（画布节点化执行语义）。
  * 断言：画布 AUDIENCE 节点成为批量成员来源（execute/dry-run 不带 audienceSnapshotId 仍成功，
- * 成员来自节点 audienceId 运行时圈选）；旧流程（无 AUDIENCE 节点）仍要求请求参数；
+ * 成员来自节点 audienceId 运行时圈选）；画布无 AUDIENCE 节点 → execute/dry-run 拒绝 400；
  * 校验：AUDIENCE 缺配置/人群不存在/重复节点拒绝；TRIGGER 定时缺 audienceId 在画布含 AUDIENCE
- * 节点时放行；view 响应注入 audienceName。
+ * 节点时放行；view 响应注入 audienceName。旧 TRIGGER config 兜底与 audienceSnapshotId 请求参数已移除。
  */
 @Testcontainers
 @SpringBootTest
@@ -135,10 +135,10 @@ class M7AudienceNodeTests {
                 .andExpect(jsonPath("$.data.totalMembers").value(1));
     }
 
-    // ---------- 3. 旧流程：无 AUDIENCE 节点时请求参数仍必填 ----------
+    // ---------- 3. 无 AUDIENCE 节点：execute/dry-run 拒绝（成员只能来自节点，无参数回退） ----------
 
     @Test
-    void legacyFlowStillRequiresSnapshotIdWithoutAudienceNode() throws Exception {
+    void executeWithoutAudienceNodeRejected() throws Exception {
         createContact(contact("A", "13800000001", null, highRisk("张伟")));
         long audience = createAudience("m7-legacy", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
         createTemplate("sms", "短信关怀", "亲爱的${name!}，欢迎回来");
@@ -146,11 +146,12 @@ class M7AudienceNodeTests {
         mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk());
 
+        // 发送方携带 audienceSnapshotId 亦无效：批量成员一律由画布 AUDIENCE 节点圈选
         mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{}"))
+                        .content("{\"audienceSnapshotId\":123}"))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("audienceSnapshotId")));
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("缺少 AUDIENCE 人群节点")));
     }
 
     // ---------- 4. 校验：AUDIENCE 缺配置 / 人群不存在 / 重复节点拒绝 ----------
@@ -235,7 +236,7 @@ class M7AudienceNodeTests {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("定时触发缺少 audienceId")));
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("定时触发缺少 AUDIENCE 人群节点")));
     }
 
     // ---------- 6. view 响应：AUDIENCE 节点 config 注入 audienceName ----------

@@ -112,19 +112,16 @@ class M3TouchTests {
         createContact(contactBody("A", "13800000001", highRisk("张伟"), List.of()));
         createContact(contactBody("C", "13800000003", highRisk("李静"), List.of("vip")));
         long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
-        long snapshot = circle(audience);
 
         createTemplate("sms", "短信关怀", "亲爱的${name!}，您有一份专属福利待领取");
         createTemplate("push", "站内推送", "APP 推送占位");
 
-        long wf = saveCanvas();
+        long wf = saveCanvas(audience);
         mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk());
 
         // 执行 → 真实下发：sms 2 条，push 0
-        String body = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"audienceSnapshotId\":" + snapshot + "}"))
+        String body = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("SUCCEEDED"))
                 .andExpect(jsonPath("$.data.dryRun").value(false))
@@ -192,25 +189,20 @@ class M3TouchTests {
         createContact(contactBody("A", "13800000001", highRisk("张伟"), List.of()));
         createContact(contactBody("C", "13800000003", highRisk("李静"), List.of()));
         long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
-        long snapshot = circle(audience);
         createTemplate("sms", "短信关怀", "亲爱的${name!}，您有一份专属福利待领取");
         createTemplate("push", "站内推送", "APP 推送占位");
-        long wf = saveCanvas();
+        long wf = saveCanvas(audience);
         mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk());
 
-        String first = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"audienceSnapshotId\":" + snapshot + "}"))
+        String first = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.nodes[?(@.key=='sms')].output.sent").value(2))
                 .andReturn().getResponse().getContentAsString();
         long exec1 = Long.parseLong(JsonPath.read(first, "$.data.executionId").toString());
 
-        // 同快照第二次执行：频率窗口内（user-window-hours=24）不再下发，计入 skipped.userRecent
-        String second = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"audienceSnapshotId\":" + snapshot + "}"))
+        // 同人群再次执行：频率窗口内（user-window-hours=24）不再下发，计入 skipped.userRecent
+        String second = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("SUCCEEDED"))
                 .andExpect(jsonPath("$.data.nodes[?(@.key=='sms')].output.sent").value(0))
@@ -238,17 +230,14 @@ class M3TouchTests {
         inTenant(() -> contactMapper.updateById(c1));
 
         long audience = createAudience("high-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "HIGH"))));
-        long snapshot = circle(audience);
 
         createTemplate("sms", "短信关怀", "亲爱的${name!}，您有一份专属福利待领取");
         createTemplate("push", "站内推送", "APP 推送占位");
-        long wf = saveCanvas();
+        long wf = saveCanvas(audience);
         mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk());
 
-        String body = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"audienceSnapshotId\":" + snapshot + "}"))
+        String body = mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("SUCCEEDED"))
                 .andExpect(jsonPath("$.data.nodes[?(@.key=='sms')].contacts").value(3))
@@ -274,16 +263,13 @@ class M3TouchTests {
         // 低流失成员 → 兜底 push 分支；push 无适配器 → 节点 FAILED、执行 FAILED、报告可见病根
         createContact(contactBody("D", "13800000004", lowRisk(), List.of()));
         long audience = createAudience("low-risk", rule("AND", List.of(cond("attribute.churn_risk", "equals", "LOW"))));
-        long snapshot = circle(audience);
         createTemplate("sms", "短信关怀", "亲爱的${name!}，您有一份专属福利待领取");
         createTemplate("push", "站内推送", "APP 推送占位");
-        long wf = saveCanvas();
+        long wf = saveCanvas(audience);
         mvc.perform(post("/api/workflows/{id}/publish", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk());
 
-        mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"audienceSnapshotId\":" + snapshot + "}"))
+        mvc.perform(post("/api/workflows/{id}/execute", wf).header(AUTH, bearer()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("FAILED"))
                 .andExpect(jsonPath("$.data.error").value(
@@ -293,22 +279,24 @@ class M3TouchTests {
 
     // ---------- helpers（复用 M2 模式） ----------
 
-    private long saveCanvas() throws Exception {
+    private long saveCanvas(long audienceId) throws Exception {
         String s = mvc.perform(post("/api/workflows").header(AUTH, bearer())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(canvasBody("churn-push", "回归关怀")))
+                        .content(canvasBody("churn-push", "回归关怀", audienceId)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
                 .andReturn().getResponse().getContentAsString();
         return Long.parseLong(JsonPath.read(s, "$.data.id").toString());
     }
 
-    private String canvasBody(String name, String description) {
+    /** 画布含 AUDIENCE 人群节点：批量成员来源一律由节点圈选。 */
+    private String canvasBody(String name, String description, long audienceId) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("name", name);
         m.put("description", description);
         m.put("nodes", List.of(
                 node("trigger", "TRIGGER", "开始", null),
+                node("aud", "AUDIENCE", "人群圈选", Map.of("audienceId", audienceId)),
                 node("cond", "CONDITION", "高流失分流", null),
                 node("sms", "ACTION", "短信",
                         Map.of("channel", "sms", "templateId", 1, "unitCost", 0.05)),
@@ -316,7 +304,8 @@ class M3TouchTests {
                         Map.of("channel", "push", "templateId", 2)),
                 node("end", "END", "结束", null)));
         m.put("edges", List.of(
-                edge("trigger", "cond", null),
+                edge("trigger", "aud", null),
+                edge("aud", "cond", null),
                 edge("cond", "sms", "{\"op\":\"AND\",\"items\":[{\"field\":\"contact.churn_risk\",\"op\":\"equals\",\"value\":\"HIGH\"}]}"),
                 edge("cond", "push", null),
                 edge("sms", "end", null),

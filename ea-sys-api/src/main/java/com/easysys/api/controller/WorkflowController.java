@@ -1,7 +1,6 @@
 package com.easysys.api.controller;
 
 import com.easysys.api.dto.workflow.ApiTriggerRequest;
-import com.easysys.api.dto.workflow.DryRunRequest;
 import com.easysys.api.dto.workflow.DryRunResponse;
 import com.easysys.api.dto.workflow.ExecutionSummaryView;
 import com.easysys.api.dto.workflow.SaveWorkflowRequest;
@@ -95,16 +94,15 @@ public class WorkflowController {
 
     /** 干跑：对已发布版本 + 快照成员模拟执行，返回报告。 */
     @PostMapping("/{id}/dry-run")
-    public ApiResponse<DryRunResponse> dryRun(@PathVariable Long id,
-                                              @Valid @RequestBody DryRunRequest req) {
-        return ApiResponse.ok(workflowService.dryRun(id, req));
+    public ApiResponse<DryRunResponse> dryRun(@PathVariable Long id) {
+        return ApiResponse.ok(workflowService.dryRun(id));
     }
 
-    /** 真实触达执行：ACTION 节点按模板经频道下发，幂等+频率治理，返回报告。 */
+    /** 真实触达执行：ACTION 节点按模板经频道下发，幂等+频率治理，返回报告。
+     *  批量成员一律由画布 AUDIENCE 人群节点圈选（画布无该节点 → 拒绝执行）。 */
     @PostMapping("/{id}/execute")
-    public ApiResponse<DryRunResponse> execute(@PathVariable Long id,
-                                               @Valid @RequestBody DryRunRequest req) {
-        return ApiResponse.ok(workflowService.execute(id, req));
+    public ApiResponse<DryRunResponse> execute(@PathVariable Long id) {
+        return ApiResponse.ok(workflowService.execute(id));
     }
 
     /** API 触发：外部系统按 workflowId 携带单用户载荷入流（triggerType=API）。 */

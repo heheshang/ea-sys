@@ -145,6 +145,8 @@ const selectedNode = computed(() =>
 const selectedEdge = computed(() =>
   selectedKind.value === 'edge' ? liteEdges.value.find((e) => e.id === selectedId.value) : undefined,
 )
+/** 画布是否含 AUDIENCE 人群节点（批量成员来源；有此节点时 TRIGGER 无需配置人群）。 */
+const hasAudienceNode = computed(() => allNodes().some((n) => nodeTypeOf(n) === 'AUDIENCE'))
 
 const NODE_KEY_COUNTERS: Record<WorkflowNodeType, number> = {
   TRIGGER: 0, AUDIENCE: 0, CONDITION: 0, AGENT_SPLIT: 0, DELAY: 0, ACTION: 0, UPDATE: 0, END: 0,
@@ -1167,7 +1169,7 @@ onUnmounted(() => {
               </el-form-item>
 
               <template v-if="nodeConfig(selectedNode).triggerType === 'SCHEDULED'">
-                <el-form-item label="人群">
+                <el-form-item v-if="!hasAudienceNode" label="人群">
                   <el-select
                     :model-value="selectedNode ? nodeConfig(selectedNode).audienceId : ''"
                     placeholder="选择圈选人群"
@@ -1177,6 +1179,7 @@ onUnmounted(() => {
                     <el-option v-for="a in audiences" :key="a.id" :label="a.name" :value="a.id" />
                   </el-select>
                 </el-form-item>
+                <div v-else class="config-hint">批量成员由画布「人群」节点圈选，此处无需重复配置。</div>
                 <el-form-item label="cron">
                   <el-input
                     :model-value="selectedNode ? (nodeConfig(selectedNode).cron as string ?? '') : ''"
@@ -1194,16 +1197,12 @@ onUnmounted(() => {
               </template>
 
               <template v-else-if="nodeConfig(selectedNode).triggerType === 'IMMEDIATE'">
-                <el-form-item label="人群">
-                  <el-select
-                    :model-value="selectedNode ? nodeConfig(selectedNode).audienceId : ''"
-                    placeholder="选择圈选人群"
-                    style="width: 100%"
-                    @update:model-value="(v: number) => updateNodeConfig('audienceId', v)"
-                  >
-                    <el-option v-for="a in audiences" :key="a.id" :label="a.name" :value="a.id" />
-                  </el-select>
-                </el-form-item>
+                <div v-if="hasAudienceNode" class="config-hint">
+                  发布成功后立即对画布「人群」节点圈选的成员执行一次，无需在此选择人群。
+                </div>
+                <el-alert v-else type="warning" :closable="false" show-icon>
+                  画布尚未放置「人群」节点：立即触发需要批量成员来源，未配置时保存将被拒绝。请从左侧拖入「人群」节点并圈选。
+                </el-alert>
               </template>
 
               <template v-else-if="nodeConfig(selectedNode).triggerType === 'EVENT'">
@@ -1226,11 +1225,14 @@ onUnmounted(() => {
               </template>
 
               <template v-else>
-                <div class="config-hint">手动触达：从首页人群列表发起；API 触发由外部系统按进化流 ID 携带单用户载荷调用接口；立即触发：发布成功后立即对配置人群执行一次。</div>
+                <div class="config-hint">
+                  手动触达：通过接口发起执行（POST /workflows/{{ workflowId ?? '«id»' }}/execute，画布含「人群」节点时自动圈选）；
+                  API 触发由外部系统携带单用户载荷入流；其余触发方式见上方选项。
+                </div>
               </template>
             </template>
 
-            <div v-else class="config-hint">该节点无需配置。</div>
+                    <div v-else class="config-hint">该节点无需配置。</div>
           </el-form>
         </template>
 

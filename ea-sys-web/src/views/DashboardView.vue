@@ -231,7 +231,7 @@ const hasWorkflows = computed(() => (workflow.value?.workflows ?? []).length > 0
       <el-card shadow="never" class="panel">
         <template #header>
           <div class="panel-title">工作流效果</div>
-          <div class="panel-sub">各工作流最近一次执行的触达与留存</div>
+          <div class="panel-sub">各工作流最近一次执行的触达，近 {{ days }} 天窗内留存活跃</div>
         </template>
         <div v-loading="workflowLoading">
           <el-alert v-if="workflowError" title="工作流效果加载失败" type="error" :closable="false" class="panel-error" />

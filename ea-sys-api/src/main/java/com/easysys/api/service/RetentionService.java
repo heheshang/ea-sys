@@ -14,7 +14,7 @@ import com.easysys.engine.mapper.ExecutionMapper;
 import com.easysys.engine.mapper.WorkflowMapper;
 import org.springframework.stereotype.Service;
 
-import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -102,10 +102,13 @@ public class RetentionService {
     }
 
     /**
-     * 工作流效果：每个工作流最近一次执行的触达人数 + 留存（触达后 N 天内有活跃事件的比例）。
+     * 工作流效果：每个工作流最近一次执行的触达人数 + 留存（近 N 天窗口内仍有活跃事件的触达人数，
+     * 窗口以当前时刻锚定，与区间留存口径一致）。
      */
     public WorkflowEffectView workflowEffect(int days) {
         Long tenantId = TenantContext.require();
+        Instant since = Instant.now().minus(Duration.ofDays(days));
+        Instant now = Instant.now();
         List<WorkflowEffectView.WorkflowEffectItem> items = new ArrayList<>();
         List<Long> workflowIds = new ArrayList<>();
         List<Map<String, Object>> executions = executionMapper.selectLatestExecutions(tenantId);
@@ -119,10 +122,8 @@ public class RetentionService {
         for (Map<String, Object> ex : executions) {
             long execId = ((Number) ex.get("execution_id")).longValue();
             long workflowId = ((Number) ex.get("workflow_id")).longValue();
-            Instant ref = ((Timestamp) ex.get("ref_time")).toInstant();
-            Instant windowEnd = ref.plusSeconds(days * 86400L);
             long reached = deliveryMapper.countDistinctByExecution(tenantId, execId);
-            long retained = deliveryMapper.countRetainedByExecution(tenantId, execId, ref, windowEnd);
+            long retained = deliveryMapper.countRetainedByExecution(tenantId, execId, since, now);
             items.add(new WorkflowEffectView.WorkflowEffectItem(workflowId, namesById.get(workflowId),
                     reached, retained, reached == 0 ? 0 : (double) retained / reached));
         }

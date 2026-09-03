@@ -58,15 +58,15 @@ public interface DeliveryRecordMapper extends BaseMapper<DeliveryRecord> {
             + "AND status IN ('SENT','DELIVERED') AND deleted = false")
     long countDistinctByExecution(@Param("tenantId") Long tenantId, @Param("executionId") Long executionId);
 
-    /** 单次执行的留存在 [ref, refEnd) 窗口内活跃（有行为事件）的触达人数。 */
+    /** 单次执行的触达人数中，在 [windowStart, windowEnd] 窗口内活跃（有行为事件）的人数。 */
     @InterceptorIgnore(tenantLine = "true")
     @Select("""
             SELECT COUNT(DISTINCT d.contact_id) FROM delivery_record d
             JOIN event e ON e.tenant_id = d.tenant_id AND e.contact_id = d.contact_id
             WHERE d.tenant_id = #{tenantId} AND d.execution_id = #{executionId}
             AND d.status IN ('SENT','DELIVERED') AND d.deleted = false
-            AND e.occurred_at >= #{ref} AND e.occurred_at < #{refEnd}
+            AND e.occurred_at >= #{windowStart} AND e.occurred_at <= #{windowEnd}
             """)
     long countRetainedByExecution(@Param("tenantId") Long tenantId, @Param("executionId") Long executionId,
-                                  @Param("ref") Instant ref, @Param("refEnd") Instant refEnd);
+                                  @Param("windowStart") Instant windowStart, @Param("windowEnd") Instant windowEnd);
 }

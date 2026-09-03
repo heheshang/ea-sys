@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { ElMessage } from 'element-plus'
+import AssistantWidget from '../components/ai/AssistantWidget.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -56,6 +57,8 @@ function onLogout() {
         <router-view />
       </el-main>
     </el-container>
+    <!-- AI 智能客服悬浮窗：全站可见（右下角） -->
+    <AssistantWidget />
   </el-container>
 </template>
 

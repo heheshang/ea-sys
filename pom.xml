@@ -34,6 +34,8 @@
     <jjwt.version>0.12.6</jjwt.version>
     <redisson.version>3.52.0</redisson.version>
     <agentscope.version>2.0.2</agentscope.version>
+    <!-- agentscope-extensions-redis 声明 7.4.1；spring-boot 父 pom 管 6.0.0 会压版本，显式对齐扩展预期 -->
+    <jedis.version>7.4.1</jedis.version>
     <quartz.version>2.3.2</quartz.version>
   </properties>
 
@@ -119,6 +121,12 @@
       <dependency>
         <groupId>io.agentscope</groupId>
         <artifactId>agentscope-extensions-model-openai</artifactId>
+        <version>${agentscope.version}</version>
+      </dependency>
+      <!-- HarnessAgent 状态/工作区 Redis 持久化（Jedis 路径；排除 redisson 传递防 4.2.0 压过 engine 3.52.0） -->
+      <dependency>
+        <groupId>io.agentscope</groupId>
+        <artifactId>agentscope-extensions-redis</artifactId>
         <version>${agentscope.version}</version>
       </dependency>
     </dependencies>

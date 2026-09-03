@@ -450,20 +450,20 @@ class PlanValidationTests {
         triggerCfg.put("triggerType", "SCHEDULED");
         triggerCfg.put("cron", cron);
         triggerCfg.put("timezone", "Asia/Shanghai");
-        triggerCfg.put("audienceId", audience);
         if (eventName != null) {
             triggerCfg.put("triggerType", "EVENT");
             triggerCfg.put("eventName", eventName);
-            triggerCfg.remove("audienceId");
         }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("name", "pv-wf");
         body.put("description", "计划校验工作流");
         body.put("nodes", List.of(
                 node("trigger", "TRIGGER", "开始", triggerCfg),
+                node("aud", "AUDIENCE", "人群圈选", Map.of("audienceId", audience)),
                 node("act1", "ACTION", "发送短信", Map.of("channel", "sms", "templateId", templateId, "unitCost", 0.05)),
                 node("end", "END", "结束", null)));
-        body.put("edges", List.of(edge("trigger", "act1"), edge("act1", "end")));
+        // 批量成员一律由画布 AUDIENCE 人群节点圈选（TRIGGER 兜底已在 0be543f 移除）
+        body.put("edges", List.of(edge("trigger", "aud"), edge("aud", "act1"), edge("act1", "end")));
         String s = mvc.perform(post("/api/workflows").header(AUTH, bearer())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(asJson(body)))

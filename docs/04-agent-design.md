@@ -249,3 +249,24 @@ sequenceDiagram
 **SSE 事件语义**：统一 `{type: AgentEventType.name()}`（大写枚举名），关键事件：`TEXT_BLOCK_DELTA`（打字机增量）、`TOOL_CALL_START` / `TOOL_RESULT_TEXT_DELTA` / `TOOL_RESULT_END`（工具行状态）、`REQUIRE_USER_CONFIRM`（确认卡）、`USER_CONFIRM_RESULT`（清除确认态；拒绝时前端回标挂起工具行「已取消」）、`AGENT_RESULT`（结语）、自定义 `draft_ready`（后端从 plan_workflow 工具输出增量重建草稿 JSON）。
 
 **数据流与安全**：租户上下文 `TenantContext` 为 ThreadLocal，工具线程经 `RuntimeContext` 类型化属性注入（`withTenant + Mono.defer`）；对话会话状态第一版用 JsonFileAgentStateStore（生产可切 agentscope-extensions-redis 的 RedisAgentStateStore）；工作流草稿不落库，人工保存走既有审计。
+
+## 11. AI 智能客服（悬浮窗助手）
+
+**职责**：全站右下角悬浮 UI 提供统一运营助手：知识库问答（文档上传 + 检索引用）、运营数据问答（到达率 / 留存率 / 漏斗 / 工作流效果）、人群检索、工作流触发（HITL 人工确认）、工作流创建（切换到既有对话创建会话）、通用闲聊。与「工作流对话创建」共融而非重复实现：创建工作直接复用 `WorkflowAiController` 会话能力。
+
+**承载**：`HarnessAgent`（name=assistant）+ 确定性 `AssistantModel`（无 LLM 全功能可跑；模型位接入 LLM 同构零改动）。入口 `AssistantController`：
+
+| 端点 | 说明 |
+|---|---|
+| `POST /api/assistant/ai-chat` | SSE 流式对话（assistant 会话） |
+| `GET /api/assistant/documents` | 知识库文档列表（状态 / 分块数） |
+| `POST /api/assistant/documents` | 上传文档（≤10MB，同步解析入库） |
+| `DELETE /api/assistant/documents/{id}` | 删除文档（软删文档行 + 物理删分块） |
+
+**策略决策**（AssistantPolicy，确定性规则，分支顺序）：取消词 → 不调工具直接收尾；知识库命中 → 摘要 + 引用卡；stats / 人群 / 工作流列表意图 → 各查询工具并出卡；创建意图 → `begin_workflow_dialogue` 工具，成功后发自定义事件 `switch_workflow_dialogue`，前端切会话并自动发起创建；触发意图 → `search_workflows` 必经 + `trigger_workflow`（框架 ASK → HITL 确认卡）；其余 → 直接文本回复（可闲聊）。
+
+**RAG 确定性检索**（无嵌入模型）：文档同步解析分块入 `kb_document_chunk`（CJK 分词 + 词频 JSONB `tokens`，`JsonbTypeHandler` 落库）；检索 = 语义无关的「CJK 分词 → JSONB 词频交集预筛（`jsonb_exists_any`，MyBatis 无法透传 `?` 运算符，GIN 索引留待原生 SQL 检索层）→ Java BM25 打分 → top-3 引用」。引用逐条含原文段落与相关度，前端以知识库卡展示。
+
+**SSE 事件与卡片**：复用 `{type}` 枚举事件（TEXT_BLOCK_DELTA / TOOL_CALL_* / REQUIRE_USER_CONFIRM / USER_CONFIRM_RESULT / AGENT_RESULT），另加自定义帧：`assistant_card {kind: kb|stats|audiences|workflows|trigger, data}`（controller 在工具结果终态按工具名映射下发，前端按 kind 渲染卡片：引用 / 统计表 / 人群列表 / 工作流快捷触发 / 触发结果）、`switch_workflow_dialogue`。工作流创建会话内的 `draft_ready` 草稿经 localStorage 中转，画布页 onMounted 消费并 `applyAiDraft()` 载入。
+
+**HITL 闸门**：`trigger_workflow` 与创建工作流的 `plan_workflow` 同走框架 ASK → `RequireUserConfirmEvent`；挂起期间前端禁输入、仅确认 / 取消，未确认消息后端 400 防御；确认经 Msg 元数据通道传递，不污染对话上下文（恢复执行不重走模型输出）。真实触发走既有执行链路（画布 AUDIENCE 人群节点为批量成员来源），失败类目以 `error` 字段透出。

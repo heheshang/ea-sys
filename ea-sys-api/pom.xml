@@ -83,6 +83,17 @@
       <groupId>io.agentscope</groupId>
       <artifactId>agentscope-harness</artifactId>
     </dependency>
+    <!-- HarnessAgent 状态/工作区 Redis 持久化（Jedis 路径；exclude redisson 防 4.2.0 压过 engine 的 3.52.0 RedissonClient bean） -->
+    <dependency>
+      <groupId>io.agentscope</groupId>
+      <artifactId>agentscope-extensions-redis</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>org.redisson</groupId>
+          <artifactId>redisson</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
     <dependency>
       <groupId>org.quartz-scheduler</groupId>
       <artifactId>quartz</artifactId>
@@ -93,6 +104,12 @@
       <groupId>org.apache.poi</groupId>
       <artifactId>poi-ooxml</artifactId>
       <version>5.5.1</version>
+    </dependency>
+    <!-- 知识库文档解析（pdf）：AI 智能客服 RAG 数据层（本地 maven 仓库含 3.0.7 及传递依赖） -->
+    <dependency>
+      <groupId>org.apache.pdfbox</groupId>
+      <artifactId>pdfbox</artifactId>
+      <version>3.0.7</version>
     </dependency>
 
     <dependency>

@@ -989,9 +989,24 @@ async function toggleFullscreen() {
   }
 }
 
+/** 消费 AI 智能客服写入的草稿（localStorage 中转）：读 → 应用 → 清除。 */
+function applyStoredDraft() {
+  if (workflowId.value) return // 仅新画布消费；带 id 的是既有工作流编辑页
+  const raw = localStorage.getItem('ea_sys_ai_draft')
+  if (!raw) return
+  try {
+    latestDraft.value = JSON.parse(raw) as AiGenerateResponse
+    applyAiDraft()
+  } catch {
+    ElMessage.warning('AI 草稿解析失败，已忽略')
+  } finally {
+    localStorage.removeItem('ea_sys_ai_draft')
+  }
+}
+
 onMounted(() => {
   document.addEventListener('fullscreenchange', onFullscreenChange)
-  load()
+  load().then(applyStoredDraft)
 })
 onUnmounted(() => {
   document.removeEventListener('fullscreenchange', onFullscreenChange)

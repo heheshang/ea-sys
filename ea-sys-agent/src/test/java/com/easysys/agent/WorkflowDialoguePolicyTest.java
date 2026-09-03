@@ -138,13 +138,16 @@ class WorkflowDialoguePolicyTest {
 
     // ---- 收尾 ----
 
+    /**
+     * 草稿成功后收尾：HITL 确认经 METADATA_CONFIRM_RESULTS 传输，不落对话历史；
+     * 确认恢复后历史尾部即 plan_workflow 的 SUCCESS 结果 → 回复草稿摘要（不再重复生成）。
+     */
     @Test
     void confirmAfterSuccessfulDraftRepliesWithSummary() {
         List<Msg> history = List.of(
                 audiencesResult(),
                 user(DEMAND),
-                planSuccessResult(),
-                user("确认生成"));
+                planSuccessResult());
 
         WorkflowDialoguePolicy.Action a = WorkflowDialoguePolicy.decide(history);
         assertInstanceOf(WorkflowDialoguePolicy.Reply.class, a);

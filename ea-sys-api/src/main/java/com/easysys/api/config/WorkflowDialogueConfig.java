@@ -4,13 +4,13 @@ import com.easysys.api.dialogue.WorkflowListChannelsTool;
 import com.easysys.api.dialogue.WorkflowPlanTool;
 import com.easysys.api.dialogue.WorkflowSearchAudiencesTool;
 import com.easysys.api.dialogue.WorkflowSearchTemplatesTool;
-import io.agentscope.core.state.JsonFileAgentStateStore;
 import io.agentscope.core.tool.Toolkit;
+import io.agentscope.extensions.redis.RedisDistributedStore;
 import io.agentscope.harness.agent.HarnessAgent;
+import io.agentscope.harness.agent.IsolationScope;
+import io.agentscope.harness.agent.filesystem.spec.RemoteFilesystemSpec;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-
-import java.nio.file.Path;
 
 /**
  * 对话式创建工作流：HarnessAgent 单例。
@@ -22,8 +22,10 @@ import java.nio.file.Path;
  * <p>权限：不设 permissionContext（默认轻量路径直接调 ToolBase#checkPermissions，
  * 查询工具显式 allow、plan_workflow 工具 ask → 框架 RequireUserConfirmEvent HITL 闸门）。
  *
- * <p>状态存储：第一版本地 JsonFileAgentStateStore（data/ 已 gitignore）；
- * 生产可切 agentscope-extensions-redis 的 RedisAgentStateStore（未评估不上）。
+ * <p>状态存储：Redis（agentscope-extensions-redis Jedis 路径）。会话状态键
+ * {@code easysys:agentscope:session:{userId}/{sessionId}:...}，工作区数据（memory/sessions/tasks/
+ * AGENTS.md 等）进 {@code easysys:agentscope:store:item:...}，均由分布式 store 承载；工作区按
+ * IsolationScope.USER 按 runtime userId（= tenantId）隔离，不落本地文件系统。
  */
 @Configuration
 public class WorkflowDialogueConfig {
@@ -38,7 +40,8 @@ public class WorkflowDialogueConfig {
             """;
 
     @Bean(destroyMethod = "close")
-    public HarnessAgent workflowDialogueAgent(WorkflowListChannelsTool listChannelsTool,
+    public HarnessAgent workflowDialogueAgent(RedisDistributedStore agentscopeDistributedStore,
+                                              WorkflowListChannelsTool listChannelsTool,
                                               WorkflowSearchTemplatesTool searchTemplatesTool,
                                               WorkflowSearchAudiencesTool searchAudiencesTool,
                                               WorkflowPlanTool planTool) {
@@ -54,7 +57,9 @@ public class WorkflowDialogueConfig {
                 .sysPrompt(SYS_PROMPT)
                 .model(new com.easysys.agent.WorkflowDialogueModel())
                 .toolkit(toolkit)
-                .stateStore(new JsonFileAgentStateStore(Path.of("data/agent-states")))
+                .distributedStore(agentscopeDistributedStore)
+                .filesystem(new RemoteFilesystemSpec(agentscopeDistributedStore.baseStore())
+                        .isolationScope(IsolationScope.USER))
                 .maxIters(4)
                 .build();
     }

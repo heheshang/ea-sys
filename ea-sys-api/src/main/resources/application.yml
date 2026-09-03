@@ -41,7 +41,8 @@ app:
 easysys:
   frequency:
     daily-cap: 10000
-    user-window-hours: 24
+    # 0 = 关闭用户级 24h 频控窗口（本地开发反复触达测试），daily-cap 仍生效；生产须改回 >0。
+    user-window-hours: 0
   channel:
     # 通道凭据加密口令：AES（AesBytesEncryptor）派生，生产必须经环境变量 CHANNEL_ENCRYPT_PASSWORD 覆盖。
     encrypt-password: ${CHANNEL_ENCRYPT_PASSWORD:ea-sys-dev-channel-key}

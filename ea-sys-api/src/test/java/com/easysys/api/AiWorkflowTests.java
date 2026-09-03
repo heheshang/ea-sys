@@ -136,13 +136,14 @@ class AiWorkflowTests {
         assertThat(resp.audienceHint().path("note").asText()).contains("人工圈选");
         assertThat(resp.workflowDraft().nodes().get(0).config().path("audienceId").isNull()).isTrue();
 
-        // 草稿保存被审核闸门拦截：ACTION 缺 templateId（邮件通道无匹配模板）→ 400
+        // 草稿保存被审核闸门拦截：画布缺 AUDIENCE 人群节点（未匹配人群不自动圈选）→ 400
         String draftJson = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(resp.workflowDraft());
         mvc.perform(post("/api/workflows").header(AUTH, bearer())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(draftJson))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("audienceId")));
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("缺少 AUDIENCE 人群节点")));
         assertThat(inTenant(() -> workflowMapper.selectCount(null))).isZero();
     }
 

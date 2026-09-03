@@ -343,8 +343,8 @@ public final class WorkflowDialoguePolicy {
 
     // ---- 分句（打字机粒度） ----
 
-    /** 中文分句：按句末标点切分；超长句按逗号二次切分，单块 ≤ 60 字。 */
-    static List<String> sentences(String text) {
+    /** 中文分句：按句末标点切分；超长句按逗号二次切分，单块 ≤ 60 字。知识库分块亦复用（跨模块）。 */
+    public static List<String> sentences(String text) {
         List<String> out = new ArrayList<>();
         StringBuilder buf = new StringBuilder();
         for (int i = 0; i < text.length(); ) {

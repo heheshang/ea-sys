@@ -23,7 +23,7 @@ public interface WorkflowMapper extends BaseMapper<Workflow> {
     @Update("TRUNCATE channel_config, delivery_record, template, execution_node_state, execution, workflow_edge, " +
             "workflow_node, workflow, contact_tag, contact_attribute, contact, " +
             "audience_snapshot_member, audience_snapshot, audience, audit_log, layer_strategy, event, " +
-            "validation_report " +
+            "validation_report, kb_document_chunk, kb_document " +
             "RESTART IDENTITY CASCADE")
     void testTruncateAll();
 

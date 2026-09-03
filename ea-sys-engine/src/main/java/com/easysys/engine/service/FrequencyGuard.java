@@ -59,10 +59,13 @@ public class FrequencyGuard {
 
     /** 幂等检查 + 消费额度：ALLOW 才可下发；USER_RECENT/DAILY_CAP 由调用方计入 skipped。 */
     public Decision checkAndConsume(Long tenantId, Long contactId, String channel) {
-        // 用户级去重（SETNX 语义）：已存在 → 近期触达过，拒绝
-        RBucket<String> user = redisson.getBucket(String.format(USER_KEY, tenantId, contactId, channel));
-        if (!user.trySet("1", userWindowHours, java.util.concurrent.TimeUnit.HOURS)) {
-            return Decision.USER_RECENT;
+        // 用户级去重（SETNX 语义）：已存在 → 近期触达过，拒绝。
+        // userWindowHours <= 0 关闭用户级频控：跳过键检查（TTL=0 的 set 会写成永久键，故不可执行）。
+        if (userWindowHours > 0) {
+            RBucket<String> user = redisson.getBucket(String.format(USER_KEY, tenantId, contactId, channel));
+            if (!user.trySet("1", userWindowHours, java.util.concurrent.TimeUnit.HOURS)) {
+                return Decision.USER_RECENT;
+            }
         }
         // 租户级每日总量（首次计数时设定当日 TTL，值 >1 说明 TTL 已就位）
         RAtomicLong daily = redisson.getAtomicLong(String.format(DAILY_KEY, tenantId, LocalDate.now(ZONE)));

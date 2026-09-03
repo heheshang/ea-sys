@@ -9,13 +9,12 @@ import reactor.core.publisher.Mono;
 import java.util.function.Supplier;
 
 /**
- * 工作流对话工具公共基类：以 ToolBase 子类承载工具（无 Lombok，显式构造），
- * 租户/失败处理统一委托 {@link ToolSupport}（工具线程无请求租户 ThreadLocal，
- * HarnessAgent 接线时经 RuntimeContext.put 注入类型化属性）。
+ * AI 智能客服工具公共基类：与 {@link WorkflowToolBase} 同构，
+ * 租户/失败处理统一委托 {@link ToolSupport}（工具线程无请求租户 ThreadLocal）。
  */
-abstract class WorkflowToolBase extends ToolBase {
+abstract class AssistantToolBase extends ToolBase {
 
-    protected WorkflowToolBase(Builder builder) {
+    protected AssistantToolBase(Builder builder) {
         super(builder);
     }
 

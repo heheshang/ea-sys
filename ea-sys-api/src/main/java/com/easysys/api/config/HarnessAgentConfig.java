@@ -9,14 +9,14 @@ import com.easysys.agent.WorkflowPlanner;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.model.ModelCreationContext;
 import io.agentscope.core.model.ModelRegistry;
-import io.agentscope.core.state.JsonFileAgentStateStore;
+import io.agentscope.extensions.redis.RedisDistributedStore;
 import io.agentscope.harness.agent.HarnessAgent;
+import io.agentscope.harness.agent.IsolationScope;
+import io.agentscope.harness.agent.filesystem.spec.RemoteFilesystemSpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-
-import java.nio.file.Path;
 
 /**
  * 批处理三路（LAYER/CHURN/WORKFLOW）统一 HarnessAgent bean 装配：执行面由框架承载
@@ -29,7 +29,9 @@ import java.nio.file.Path;
  * 运行时 LLM 挂（网络/认证）由 AgentPolicy 以 provider_error 落入确定性 fallback，执行不中断。</p>
  *
  * <p>会话语义：批处理无状态（disableSessionPersistence + RuntimeContext(userId=tenantId) 多租户
- * 隔离），stateStore 与对话面共用 data/agent-states 目录（无状态下不落盘，仅满足装配约定）。</p>
+ * 隔离），stateStore 与工作区统一走 Redis（agentscope-extensions-redis Jedis 路径，键前缀
+ * {@code easysys:agentscope:}），工作区按 IsolationScope.USER 按 runtime userId（= tenantId）
+ * 隔离，不落本地文件系统。</p>
  */
 @Configuration
 public class HarnessAgentConfig {
@@ -37,35 +39,41 @@ public class HarnessAgentConfig {
     private static final Logger log = LoggerFactory.getLogger(HarnessAgentConfig.class);
 
     @Bean(destroyMethod = "close")
-    public HarnessAgent layerStrategyAgent(AgentLlmProperties llm) {
+    public HarnessAgent layerStrategyAgent(RedisDistributedStore agentscopeDistributedStore,
+                                           AgentLlmProperties llm) {
         DeterministicLayerPlanner planner = new DeterministicLayerPlanner();
         return batchAgent("layer-strategy", "人群分层策略生成（LAYER 批处理）",
-                sysPrompt(AgentType.LAYER), planner, llm);
+                sysPrompt(AgentType.LAYER), planner, llm, agentscopeDistributedStore);
     }
 
     @Bean(destroyMethod = "close")
-    public HarnessAgent churnScanAgent(AgentLlmProperties llm) {
+    public HarnessAgent churnScanAgent(RedisDistributedStore agentscopeDistributedStore,
+                                       AgentLlmProperties llm) {
         DeterministicChurnPlanner planner = new DeterministicChurnPlanner();
         return batchAgent("churn-scan", "成员流失风险批量评估（CHURN 批处理）",
-                sysPrompt(AgentType.CHURN), planner, llm);
+                sysPrompt(AgentType.CHURN), planner, llm, agentscopeDistributedStore);
     }
 
     @Bean(destroyMethod = "close")
-    public HarnessAgent workflowGenerateAgent(AgentLlmProperties llm) {
+    public HarnessAgent workflowGenerateAgent(RedisDistributedStore agentscopeDistributedStore,
+                                              AgentLlmProperties llm) {
         WorkflowPlanner planner = new WorkflowPlanner();
         return batchAgent("workflow-generate", "运营工作流 DAG 生成（WORKFLOW 批处理）",
-                sysPrompt(AgentType.WORKFLOW), planner, llm);
+                sysPrompt(AgentType.WORKFLOW), planner, llm, agentscopeDistributedStore);
     }
 
     /** 批处理装配模板：单次迭代、无工具/无会话/无子代理，模型位按 LLM 开关选择。 */
     private static HarnessAgent batchAgent(String name, String description, String sysPrompt,
-                                           StrategyAgent planner, AgentLlmProperties llm) {
+                                           StrategyAgent planner, AgentLlmProperties llm,
+                                           RedisDistributedStore distributedStore) {
         return HarnessAgent.builder()
                 .name(name)
                 .description(description)
                 .sysPrompt(sysPrompt)
                 .model(primaryModel(llm, planner))
-                .stateStore(new JsonFileAgentStateStore(Path.of("data/agent-states")))
+                .distributedStore(distributedStore)
+                .filesystem(new RemoteFilesystemSpec(distributedStore.baseStore())
+                        .isolationScope(IsolationScope.USER))
                 .maxIters(1)
                 .disableSessionPersistence()
                 .disableFilesystemTools()

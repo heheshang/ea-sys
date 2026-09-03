@@ -64,6 +64,8 @@ class M3TouchTests {
     static void redisProps(DynamicPropertyRegistry registry) {
         registry.add("spring.data.redis.host", redis::getHost);
         registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
+        // 频率窗口覆盖回 24h：本测试断言「窗口内二次执行被 userRecent 拦截」的语义
+        registry.add("easysys.frequency.user-window-hours", () -> "24");
     }
 
     @Autowired

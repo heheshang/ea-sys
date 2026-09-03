@@ -63,6 +63,14 @@ const nodes = ref<Node[]>([])
 const edges = ref<Edge[]>([])
 const { screenToFlowCoordinate, fitView } = useVueFlow()
 
+/** 首帧节点尺寸就绪后受控全览一次：maxZoom=1 只缩不放，避免少节点画布被放大到 maxZoom(2)。 */
+let nodesInitFitted = false
+function onNodesInitialized() {
+  if (nodesInitFitted) return
+  nodesInitFitted = true
+  fitView({ padding: 0.15, maxZoom: 1 })
+}
+
 function realOf(n: LiteNode): WorkflowNodeSpec {
   return n.data.real
 }
@@ -408,7 +416,6 @@ async function load() {
   }
   await loadTemplates()
   await loadAudiences()
-  fitView({ padding: 0.15 })
 }
 
 function buildRequest(): SaveWorkflowRequest {
@@ -808,7 +815,7 @@ function applyAiDraft() {
   // position 全为兜底默认 → 触发自动布局；渲染后 fitView
   setTimeout(() => {
     autoLayout()
-    fitView({ padding: 0.15 })
+    fitView({ padding: 0.15, maxZoom: 1 })
   }, 0)
   ElMessage.success('AI 草稿已载入画布，请人工校对节点配置后保存')
 }
@@ -876,7 +883,7 @@ function autoLayout() {
     }),
   )
   clearSelection()
-  fitView({ padding: 0.15 })
+  fitView({ padding: 0.15, maxZoom: 1 })
 }
 
 /* ---------- 全屏展示 ---------- */
@@ -886,7 +893,7 @@ const isFullscreen = ref(false)
 
 function onFullscreenChange() {
   isFullscreen.value = document.fullscreenElement != null
-  nextTick(() => fitView({ padding: 0.15 }))
+  nextTick(() => fitView({ padding: 0.15, maxZoom: 1 }))
 }
 
 async function toggleFullscreen() {
@@ -925,7 +932,7 @@ onUnmounted(() => {
       <div class="wf-actions">
         <el-button @click="router.push('/workflows')">返回列表</el-button>
         <el-button @click="autoLayout">自动布局</el-button>
-        <el-button :icon="Aim" @click="fitView({ padding: 0.15 })">居中</el-button>
+        <el-button :icon="Aim" @click="fitView({ padding: 0.15, maxZoom: 1 })">居中</el-button>
         <el-button :icon="FullScreen" @click="toggleFullscreen">{{ isFullscreen ? '退出全屏' : '全屏' }}</el-button>
         <el-button type="primary" :loading="saving" @click="save">保存</el-button>
         <el-button :loading="validating" @click="validate">校验</el-button>
@@ -965,7 +972,8 @@ onUnmounted(() => {
           @node-click="(ev) => selectNode(ev.node.id)"
           @edge-click="(ev) => selectEdge(ev.edge.id)"
           @pane-click="clearSelection"
-          :fit-view-on-init="true"
+          :fit-view-on-init="false"
+          @nodes-initialized="onNodesInitialized"
           :min-zoom="0.2"
           :max-zoom="2"
         >

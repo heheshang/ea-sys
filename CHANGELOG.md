@@ -17,7 +17,7 @@
 - 联系人支持批量随机添加（最多 5000 条），用于人群圈选与触达验证（`101da4b`）
 - TRIGGER 支持立即触发：发布后立即对配置人群执行一次（`7c92256`）
 - 驾驶舱：八类知识领域图谱登记/状态管理（内置目录 + 用户登记覆盖），LLM 调用监控总览（token/调用/成本/延迟/降级，按 Agent 与模型聚合），确定性系统洞察与 LLM 调用追踪（审计驱动）
-- 评测中心：数据集/用例管理（openjudge + execute 两种模式），11 个内置评测器（规则 5 + LLM-Judge 6）批量运行 → 指标均值 → 报告落库 + 审计
+- 评测中心：数据集/用例管理（openjudge + execute 两种模式，execute 真实运行被测智能体 assistant / workflow-dialogue 注入工具轨迹），15 个内置评测器（规则 9 + LLM-Judge 6）批量运行 → 指标均值 → 报告落库 + 审计；执行维度新增 tool_call_accuracy / task_success / step_efficiency / policy_compliance 四个确定性规则评测器（V14）
 - 驾驶舱 LLM 卡用量明细：总 Token / 提问轮次 / 调用 / 输入 / 输出 / 缓存命中六指标 + 上下文构成（六类条目数 / Token / 占比，字符折算估算），`llm_usage` 表按会话 upsert（V13），调用与 token 防双计合并 audit 口径
 - 驾驶舱 LLM 卡上下文构成改为查询期 AgentState 实时派生：按 `llm_usage` 最近聊天会话定位，取 agent 实时转录剔末尾最终回复后实算六类构成（中间件快照保留为兜底），估算逻辑抽共享类 `LlmContextEstimator` 与中间件共用防口径漂移
 

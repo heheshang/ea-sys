@@ -17,10 +17,12 @@ import java.util.regex.Pattern;
  * 确定性评测规划器（规则主实现/兜底）：按评测器目录对每个用例打分、聚合指标均值、
  * 产分级发现与汇总 verdict。输出自洽满足 {@link LayerSchemas#evaluationReportSchema()}。
  *
- * <p>评测器 = 内置常量目录（11 个，代码内置不落表）：
+ * <p>评测器 = 内置常量目录（15 个，代码内置不落表）：
  * <ul>
- *   <li>规则 5：number_accuracy / string_exact / response_repetition / text_similarity /
- *       observation_information_gain —— 纯确定性算法，本类内实现。</li>
+ *   <li>规则 9：number_accuracy / string_exact / response_repetition / text_similarity /
+ *       observation_information_gain / tool_call_accuracy / task_success / step_efficiency /
+ *       policy_compliance —— 纯确定性算法，本类内实现（后 4 个为执行维度评测器：工具调用
+ *       正确性 / 端到端任务成功 / 轨迹步数效率 / 策略合规）。</li>
  *   <li>LLM-Judge 6：llm_correctness / llm_instruction_following / llm_relevance /
  *       llm_hallucination / llm_reasoning_groundedness / llm_response_completeness ——
  *       LLM 提供方未启用（easysys.agent.llm.enabled=false，默认）时以规则近似降级
@@ -33,11 +35,16 @@ import java.util.regex.Pattern;
  * {"scope": "llm_call", "mode": "openjudge|execute", "llm_enabled": false,
  *  "cases": [{"seq": N, "question": "...", "system_prompt": "...",
  *             "expected_output": any, "expected_tool": {"name": "...", "args": {...}},
- *             "tool_schema": {...}, "provided_response": "...", "actual_response": "..."}],
+ *             "tool_schema": {...}, "expected_steps": N,
+ *             "expected_policy": [{"keyword": "...", "prohibit": false}],
+ *             "provided_response": "...", "actual_response": "...",
+ *             "actual_tool_calls": [{"name": "...", "args": {...}}], "actual_steps": N}],
  *  "evaluators": [{"metric": "...", "category": "rule|llm_judge"}]}
  * </pre>
  * actual_response 为判分对象：openjudge 模式取 provided_response（跳过执行），
- * execute 模式由 service 先运行被测智能体注入。规则与降级近似全部确定性、无随机、无网络。
+ * execute 模式由 service 先运行被测智能体注入，并注入实际工具调用轨迹
+ * （actual_tool_calls）与实际步数（actual_steps，工具调用步 + 最终回复步）。
+ * 规则与降级近似全部确定性、无随机、无网络。
  */
 public final class EvaluationModel implements StrategyAgent, AgentFallback {
 
@@ -50,7 +57,11 @@ public final class EvaluationModel implements StrategyAgent, AgentFallback {
             "string_exact",
             "response_repetition",
             "text_similarity",
-            "observation_information_gain");
+            "observation_information_gain",
+            "tool_call_accuracy",
+            "task_success",
+            "step_efficiency",
+            "policy_compliance");
 
     /** LLM-Judge 评测器（LLM 未启用时确定性近似降级）。 */
     public static final List<String> LLM_JUDGE_METRICS = List.of(
@@ -61,7 +72,7 @@ public final class EvaluationModel implements StrategyAgent, AgentFallback {
             "llm_reasoning_groundedness",
             "llm_response_completeness");
 
-    /** 全部 11 个内置评测器。 */
+    /** 全部 15 个内置评测器。 */
     public static final List<String> ALL_METRICS = concat(RULE_METRICS, LLM_JUDGE_METRICS);
 
     private static List<String> concat(List<String> a, List<String> b) {
@@ -225,6 +236,14 @@ public final class EvaluationModel implements StrategyAgent, AgentFallback {
                 return jaccard(charBigrams(expected), charBigrams(actual));
             case "observation_information_gain":
                 return infoGain(question, systemPrompt, actual);
+            case "tool_call_accuracy":
+                return toolCallAccuracy(c);
+            case "task_success":
+                return taskSuccess(expected, actual);
+            case "step_efficiency":
+                return stepEfficiency(c);
+            case "policy_compliance":
+                return policyCompliance(c);
             case "llm_correctness":
                 return jaccard(charBigrams(expected), charBigrams(actual));
             case "llm_instruction_following":
@@ -310,6 +329,106 @@ public final class EvaluationModel implements StrategyAgent, AgentFallback {
         }
         long matched = elements.stream().filter(el -> actual.contains(el)).count();
         return (double) matched / elements.size();
+    }
+
+    /**
+     * tool_call_accuracy：期望工具在轨迹 {@code actual_tool_calls=[{name,args}]} 中被调用 →
+     * 0.5；期望参数逐键匹配（JSON 规范化结构等值）再补 0.5。期望工具未提供或轨迹缺失 → 不适用；
+     * 有轨迹但期望工具未被调用 → 0（真实失败信号）。
+     */
+    private static Double toolCallAccuracy(JsonNode c) {
+        JsonNode expectedTool = c.path("expected_tool");
+        String expectedName = expectedTool.isObject() ? expectedTool.path("name").asText("") : "";
+        if (expectedName.isBlank()) {
+            return null;
+        }
+        JsonNode calls = c.path("actual_tool_calls");
+        if (!calls.isArray() || calls.isEmpty()) {
+            return null; // 无轨迹（未执行或 openjudge 数据）→ 不适用
+        }
+        JsonNode expectedArgs = expectedTool.path("args");
+        for (JsonNode call : calls) {
+            if (!call.isObject() || !expectedName.equals(call.path("name").asText(""))) {
+                continue;
+            }
+            if (!expectedArgs.isObject() || argsMatch(expectedArgs, call.path("args"))) {
+                return 1.0; // 未给期望参数或参数全匹配 → 满分
+            }
+            return 0.5; // 工具名命中但参数不符
+        }
+        return 0.0;
+    }
+
+    /** expected args 中每个键在 actual args 中结构等值才算匹配（期望只约束关键参数）。 */
+    private static boolean argsMatch(JsonNode expectedArgs, JsonNode actualArgs) {
+        if (actualArgs == null || actualArgs.isMissingNode() || actualArgs.isNull()) {
+            return false;
+        }
+        var it = expectedArgs.fieldNames();
+        while (it.hasNext()) {
+            String key = it.next();
+            if (!expectedArgs.get(key).equals(actualArgs.get(key))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** task_success：端到端成功判定——期望含数字时数字全集命中，否则文本全等或相似度 ≥ 0.8；期望为空 → 不适用。 */
+    private static Double taskSuccess(String expected, String actual) {
+        if (expected.trim().isEmpty()) {
+            return null;
+        }
+        Set<String> exp = numbers(expected);
+        if (!exp.isEmpty()) {
+            Set<String> act = numbers(actual);
+            return exp.stream().allMatch(act::contains) ? 1.0 : 0.0;
+        }
+        if (expected.trim().equals(actual.trim())) {
+            return 1.0;
+        }
+        return jaccard(charBigrams(expected), charBigrams(actual)) >= 0.8 ? 1.0 : 0.0;
+    }
+
+    /**
+     * step_efficiency：min(1, expected_steps / max(1, actual_steps))。
+     * actual_steps = 工具调用步 + 最终回复步（service 注入）；无轨迹（openjudge 数据）→ 不适用。
+     */
+    private static Double stepEfficiency(JsonNode c) {
+        if (!c.path("actual_steps").isInt()) {
+            return null;
+        }
+        int actual = Math.max(1, c.path("actual_steps").asInt(1));
+        int expected = Math.max(1, c.path("expected_steps").asInt(1));
+        return Math.min(1.0, (double) expected / actual);
+    }
+
+    /**
+     * policy_compliance：期望策略条款 {@code expected_policy=[{keyword,prohibit}]}——
+     * prohibit=true 期望禁区词不出现，false 期望必备词出现；任一违规 → 0，全合规 → 1.0。
+     * 无可检查条款 → 不适用。
+     */
+    private static Double policyCompliance(JsonNode c) {
+        JsonNode policy = c.path("expected_policy");
+        if (!policy.isArray() || policy.isEmpty()) {
+            return null;
+        }
+        String actual = text(c.path("actual_response"));
+        for (JsonNode clause : policy) {
+            String keyword = clause.path("keyword").asText("");
+            if (keyword.isBlank()) {
+                continue;
+            }
+            boolean prohibit = clause.path("prohibit").asBoolean(false);
+            boolean present = actual.contains(keyword);
+            if (prohibit && present) {
+                return 0.0; // 禁区词出现 → 违规
+            }
+            if (!prohibit && !present) {
+                return 0.0; // 必备词缺失 → 违规
+            }
+        }
+        return 1.0;
     }
 
     /** llm_hallucination（降级近似）：1 - 无依据内容占比；依据 = question+system_prompt+expected。 */

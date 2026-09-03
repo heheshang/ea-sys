@@ -431,6 +431,79 @@ class M8CockpitEvaluationTests {
         assertThat(metricScore(data.path("metrics"), "string_exact")).isCloseTo(1.0, within(0.001));
     }
 
+    // ---------- 7. execute：真实运行被测智能体 + 执行维度评测器 ----------
+
+    /**
+     * execute 模式真实运行 assistant（LLM 未启用 → AssistantPolicy 确定性意图路由）。测试环境
+     * 无运营数据种子，query_stats 返回空 topics → assistant 渲染空态文案「上周期 0 人…留存率约 0.0%」。
+     * 用例 1 全合规（工具命中/步数合适/包含「留存率」必备词），用例 2 全违规（错工具名/期望步数不足/必备词缺失）：
+     * tool_call_accuracy (1+0)/2=0.5、step_efficiency (1+0.5)/2=0.75、policy_compliance (1+0)/2=0.5。
+     */
+    @Test
+    void evaluationExecuteRunsAssistantWithExecutionMetrics() throws Exception {
+        long ds = createDataset("执行判分", "execute", "assistant");
+        addCase(ds, "查一下近 30 天留存率", null, null, Map.of("name", "query_stats"), 2,
+                java.util.List.of(Map.of("keyword", "留存率", "prohibit", false)));
+        addCase(ds, "查一下近 30 天留存率", null, null, Map.of("name", "wrong_tool"), 1,
+                java.util.List.of(Map.of("keyword", "今天天气", "prohibit", false)));
+
+        Map<String, Object> run = new LinkedHashMap<>();
+        run.put("datasetId", ds);
+        run.put("evaluators", java.util.List.of("tool_call_accuracy", "step_efficiency", "policy_compliance"));
+        JsonNode data = parse(postJson("/api/evaluations/run", asJson(run))).path("data");
+
+        assertThat(data.path("testedCases").asInt()).isEqualTo(2);
+        assertThat(data.path("totalCases").asInt()).isEqualTo(2);
+        assertThat(data.path("mode").asText()).isEqualTo("execute");
+        // 执行链路注入实际轨迹：适用数 = 用例数
+        assertThat(metricApplicable(data.path("metrics"), "tool_call_accuracy")).isEqualTo(2);
+        assertThat(metricApplicable(data.path("metrics"), "step_efficiency")).isEqualTo(2);
+        assertThat(metricScore(data.path("metrics"), "tool_call_accuracy")).isCloseTo(0.5, within(0.001));
+        assertThat(metricScore(data.path("metrics"), "step_efficiency")).isCloseTo(0.75, within(0.001));
+        assertThat(metricScore(data.path("metrics"), "policy_compliance")).isCloseTo(0.5, within(0.001));
+        // 均值 (0.5+0.75+0.5)/3 = 58.3 → FAIL（<60 阈值，既有分级语义）
+        assertThat(data.path("summary").path("score").asDouble()).isCloseTo(58.3, within(0.1));
+        assertThat(data.path("summary").path("verdict").asText()).isEqualTo("FAIL");
+        // 报告落库 + 审计形状不变
+        assertThat(inTenant(() -> reportMapper.selectCount(new LambdaQueryWrapper<EvaluationReport>()
+                .eq(EvaluationReport::getTenantId, 1L)))).isEqualTo(1);
+        assertThat(lastAuditLine()).isEqualTo("EVALUATION|evaluation_run|SUCCESS|true|rule");
+    }
+
+    // ---------- 8. openjudge 数据下执行维度评测器不适用（INFO）----------
+
+    @Test
+    void evaluationOpenJudgeExecutionMetricsReportInfo() throws Exception {
+        long ds = createDataset("开放判分全量", "openjudge");
+        addCase(ds, "查一下留存", null, "暂无运营数据");
+
+        Map<String, Object> run = new LinkedHashMap<>();
+        run.put("datasetId", ds);
+        // 缺省 evaluators → 全量 15 个
+        JsonNode data = parse(postJson("/api/evaluations/run", asJson(run))).path("data");
+
+        assertThat(data.path("testedCases").asInt()).isEqualTo(1);
+        // 缺省全量 15 个评测器均参与评估；不适用（缺 expected 基准/轨迹）仅以 INFO 发现列出，
+        // 不进 metrics。本用例仅有 provided_response、无 expected → 适用 6 个无基准评测器。
+        JsonNode metricsNode = data.path("metrics");
+        assertThat(metricsNode.size()).isEqualTo(6);
+        // 执行维度评测器缺 expected 基准 + 缺轨迹 → 不在 metrics、INFO 发现列出
+        for (String m : java.util.List.of("tool_call_accuracy", "task_success", "step_efficiency",
+                "policy_compliance")) {
+            assertThat(metricApplicable(metricsNode, m)).as("metric %s 不应有适用用例", m).isEqualTo(-1);
+            boolean info = false;
+            for (JsonNode f : data.path("findings")) {
+                if ("INFO".equals(f.path("level").asText()) && m.equals(f.path("dimension").asText())) {
+                    info = true;
+                }
+            }
+            assertThat(info).as("metric %s 应有 INFO 发现", m).isTrue();
+        }
+        // 无基准也可判分的评测器正常出分
+        assertThat(metricApplicable(metricsNode, "response_repetition")).isEqualTo(1);
+        assertThat(metricApplicable(metricsNode, "observation_information_gain")).isEqualTo(1);
+    }
+
     // ---------- helpers ----------
 
     private long createGraphEntry(String module, String entryKey, String name) throws Exception {
@@ -444,10 +517,17 @@ class M8CockpitEvaluationTests {
     }
 
     private long createDataset(String name, String mode) throws Exception {
+        return createDataset(name, mode, null);
+    }
+
+    private long createDataset(String name, String mode, String agentType) throws Exception {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("name", name);
         m.put("scope", "llm_call");
         m.put("mode", mode);
+        if (agentType != null) {
+            m.put("agentType", agentType);
+        }
         String body = postJson("/api/evaluations/datasets", asJson(m));
         return Long.parseLong(JsonPath.read(body, "$.data.id").toString());
     }
@@ -458,6 +538,30 @@ class M8CockpitEvaluationTests {
         m.put("question", question);
         m.put("expectedOutput", expectedOutput);
         m.put("providedResponse", providedResponse);
+        String body = postJson("/api/evaluations/datasets/" + datasetId + "/cases", asJson(m));
+        return Long.parseLong(JsonPath.read(body, "$.data.id").toString());
+    }
+
+    /** execute 执行维度用例：带 expectedTool/expectedSteps/expectedPolicy 基准，不传 providedResponse（真实执行）。 */
+    private long addCase(long datasetId, String question, Object expectedOutput, String providedResponse,
+                         Object expectedTool, Integer expectedSteps, Object expectedPolicy) throws Exception {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("question", question);
+        if (expectedOutput != null) {
+            m.put("expectedOutput", expectedOutput);
+        }
+        if (expectedTool != null) {
+            m.put("expectedTool", expectedTool);
+        }
+        if (expectedSteps != null) {
+            m.put("expectedSteps", expectedSteps);
+        }
+        if (expectedPolicy != null) {
+            m.put("expectedPolicy", expectedPolicy);
+        }
+        if (providedResponse != null) {
+            m.put("providedResponse", providedResponse);
+        }
         String body = postJson("/api/evaluations/datasets/" + datasetId + "/cases", asJson(m));
         return Long.parseLong(JsonPath.read(body, "$.data.id").toString());
     }
@@ -515,6 +619,15 @@ class M8CockpitEvaluationTests {
         for (JsonNode m : metrics) {
             if (metric.equals(m.path("metric").asText())) {
                 return m.path("avg_score").asDouble(-1);
+            }
+        }
+        return -1;
+    }
+
+    private int metricApplicable(JsonNode metrics, String metric) {
+        for (JsonNode m : metrics) {
+            if (metric.equals(m.path("metric").asText())) {
+                return m.path("applicable_count").asInt(-1);
             }
         }
         return -1;

@@ -302,27 +302,27 @@ sequenceDiagram
 
 ## 13. 评测中心（数据集 + 内置评测器 + 批量运行）
 
-**职责**：数据集（scope=llm_call，mode=openjudge / execute）+ 用例管理 + 11 个内置评测器批量运行 → 各评测器均值 → 报告落库（jsonb）+ 审计。评测器是代码常量内置目录（规则 5 + LLM-Judge 6），不落表。
+**职责**：数据集（scope=llm_call，mode=openjudge / execute，execute 携带被测智能体 agent_type）+ 用例管理 + 15 个内置评测器批量运行 → 各评测器均值 → 报告落库（jsonb）+ 审计。评测器是代码常量内置目录（规则 9 + LLM-Judge 6），不落表。openjudge 用预置响应判分；execute 由 service 真实运行被测智能体（assistant / workflow-dialogue，`ReActAgent.call` 同步 + 30s 超时），注入实际回复与工具调用轨迹（`actual_tool_calls` / `actual_steps`）后走同一判分链路。
 
 **承载**：`HarnessAgent`（name=evaluation）+ 确定性 `EvaluationModel`（判分全确定性：规则算法实现；LLM-Judge 在 `easysys.agent.llm.enabled=false` 时走确定性近似降级，测试不依赖 LLM）。新 `AgentType.EVALUATION`，入口 `EvaluationController`：
 
 | 端点 | 说明 |
 |---|---|
 | `GET /api/evaluations/datasets` | 数据集列表（含 caseCount） |
-| `POST /api/evaluations/datasets` | 新建（scope=llm_call，mode=openjudge/execute，status） |
+| `POST /api/evaluations/datasets` | 新建（scope=llm_call，mode=openjudge/execute，agent_type=assistant/workflow-dialogue，status） |
 | `PUT /api/evaluations/datasets/{id}` | 编辑（mode / status 可改） |
 | `DELETE /api/evaluations/datasets/{id}` | 删除（级联软删用例 + 报告） |
 | `GET /api/evaluations/datasets/{id}/cases` | 用例列表（seq 升序） |
 | `POST /api/evaluations/datasets/{id}/cases` | 新增用例（seq 缺省 = max+1） |
 | `PUT /api/evaluations/datasets/{id}/cases/{caseId}` | 编辑用例 |
 | `DELETE /api/evaluations/cases/{id}` | 删除用例 |
-| `POST /api/evaluations/run` | 批量运行：`{datasetId, evaluators?}`（缺省 = 全量 11；execute 模式抛 BizException 不可运行） |
+| `POST /api/evaluations/run` | 批量运行：`{datasetId, evaluators?}`（缺省 = 全量 15；openjudge 用预置响应判分，execute 真实运行被测智能体） |
 | `GET /api/evaluations/reports` | 报告列表（摘要列） |
 | `GET /api/evaluations/reports/{id}` | 报告详情 |
 | `DELETE /api/evaluations/reports/{id}` | 删除报告 |
 
-**评测目录（与 `EvaluationModel` 常量逐字对齐）**：规则 `number_accuracy` / `string_exact` / `response_repetition` / `text_similarity` / `observation_information_gain`；LLM-Judge `llm_correctness` / `llm_instruction_following` / `llm_relevance` / `llm_hallucination` / `llm_reasoning_groundedness` / `llm_response_completeness`。模型入参会静默丢弃不在 `ALL_METRICS` 的 metric，前端目录必须与之对齐。
+**评测目录（与 `EvaluationModel` 常量逐字对齐）**：规则 `number_accuracy` / `string_exact` / `response_repetition` / `text_similarity` / `observation_information_gain` / `tool_call_accuracy` / `task_success` / `step_efficiency` / `policy_compliance`；LLM-Judge `llm_correctness` / `llm_instruction_following` / `llm_relevance` / `llm_hallucination` / `llm_reasoning_groundedness` / `llm_response_completeness`。四个执行维度评测器参考通用 agent 评测指标：工具调用正确性（期望工具名精确命中 0.5 / 参数全匹配 1.0，有轨迹但未调用 0）、端到端任务成功（期望数字全集命中或文本 bigram 相似度 ≥0.8）、步骤效率（min(1, 期望步数/实际步数)）、策略合规（`expected_policy=[{keyword,prohibit}]` 必备/禁区词，任一违规 0）。模型入参会静默丢弃不在 `ALL_METRICS` 的 metric，前端目录必须与之对齐。
 
-**判分与报告**：判分对象 `actual_response`（openjudge 由 service 复制 provided_response；空 = 不适用 null，不计均值）；单用例得分 ≥0.8 记通过；`metrics[] {metric, category, avg_score, passed_count, applicable_count}`（jsonb 原文 snake_case），`summary {score, verdict}`（≥80 PASS / ≥60 WARN / 其余 FAIL），`findings[]` 含 INFO（无适用用例）/ WARNING / BLOCKED（均值 <0.6）分级与修复建议。报告落 `evaluation_report`（jsonb 原样透传），顶层 `testedCases/totalCases` 走 JavaBean 序列化驼峰。
+**判分与报告**：判分对象 `actual_response`（openjudge 由 service 复制 provided_response；execute 注入真实回复与轨迹；空 = 不适用 null，不计均值）；单用例得分 ≥0.8 记通过；`metrics[] {metric, category, avg_score, passed_count, applicable_count}` 只含适用用例数 >0 的评测器，无适用用例的评测器不进 metrics、仅以 `findings[]` INFO 发现列出（jsonb 原文 snake_case），`summary {score, verdict}`（≥80 PASS / ≥60 WARN / 其余 FAIL），`findings[]` 含 INFO / WARNING / BLOCKED（均值 <0.6）分级与修复建议。报告落 `evaluation_report`（jsonb 原样透传），顶层 `testedCases/totalCases` 走 JavaBean 序列化驼峰。execute 单用例失败 / 超时 / 空回复不整轮报错，该用例判分不适用（INFO），审计形状与 openjudge 一致（同一 `AgentPolicy.run` + `persistAudit`）。
 
-**审计约定**：图谱 / 数据集 / 用例 / 报告的全部写操作（create/update/delete/run）均写入 `agent_audit`（action = 端到端动作名，schema 合规即有效），运行评测触发完整 HarnessAgent 链路（超时 / 降级兜底齐全）；前端 `POST /run` 前检查数据集 mode=openjudge 且 enabled、用例数 >0，execute 模式运行按钮禁用并提示。
+**审计约定**：图谱 / 数据集 / 用例 / 报告的全部写操作（create/update/delete/run）均写入 `agent_audit`（action = 端到端动作名，schema 合规即有效），运行评测触发完整 HarnessAgent 链路（超时 / 降级兜底齐全）；前端 `POST /run` 前检查数据集 enabled、用例数 >0，execute 模式同样可运行（数据集对话框选择被测智能体）。

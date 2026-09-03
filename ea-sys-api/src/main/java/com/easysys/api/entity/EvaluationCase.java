@@ -41,6 +41,13 @@ public class EvaluationCase {
     @TableField(typeHandler = JsonbStringTypeHandler.class)
     private String expectedTool;
 
+    /** 期望执行步数（step_efficiency 基准，缺省 1）。 */
+    private Integer expectedSteps;
+
+    /** 期望策略条款 JSON（policy_compliance 违规检测基准，可选）。 */
+    @TableField(typeHandler = JsonbStringTypeHandler.class)
+    private String expectedPolicy;
+
     /** OpenJudge 预置响应文本：直接作为实际响应判分，跳过被测智能体执行。 */
     private String providedResponse;
 
@@ -118,6 +125,22 @@ public class EvaluationCase {
 
     public void setExpectedTool(String expectedTool) {
         this.expectedTool = expectedTool;
+    }
+
+    public Integer getExpectedSteps() {
+        return expectedSteps;
+    }
+
+    public void setExpectedSteps(Integer expectedSteps) {
+        this.expectedSteps = expectedSteps;
+    }
+
+    public String getExpectedPolicy() {
+        return expectedPolicy;
+    }
+
+    public void setExpectedPolicy(String expectedPolicy) {
+        this.expectedPolicy = expectedPolicy;
     }
 
     public String getProvidedResponse() {

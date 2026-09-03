@@ -25,13 +25,26 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.agentscope.core.ReActAgent;
+import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.message.Msg;
+import io.agentscope.core.message.ToolCallState;
+import io.agentscope.core.message.ToolUseBlock;
+import io.agentscope.core.message.UserMessage;
+import io.agentscope.core.state.AgentState;
 import io.agentscope.harness.agent.HarnessAgent;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * 评测中心：数据集 + 用例 + 批量运行（AgentPolicy 确定性评测模型 + 审计）+ 报告回看。
@@ -43,22 +56,34 @@ import java.util.List;
 @Service
 public class EvaluationService {
 
+    private static final Logger log = LoggerFactory.getLogger(EvaluationService.class);
+
+    /** execute 模式单用例执行超时（被测智能体确定性执行，超时用例视为不适用跳过判分）。 */
+    private static final Duration EXECUTE_TIMEOUT = Duration.ofSeconds(30);
+
     private final EvaluationDatasetMapper datasetMapper;
     private final EvaluationCaseMapper caseMapper;
     private final EvaluationReportMapper reportMapper;
     private final AgentAuditMapper auditMapper;
     private final HarnessAgent evaluationAgent;
+    private final HarnessAgent assistantAgent;
+    private final HarnessAgent workflowDialogueAgent;
     private final AgentLlmProperties llm;
     private final ObjectMapper json;
 
     public EvaluationService(EvaluationDatasetMapper datasetMapper, EvaluationCaseMapper caseMapper,
                              EvaluationReportMapper reportMapper, AgentAuditMapper auditMapper,
-                             HarnessAgent evaluationAgent, AgentLlmProperties llm, ObjectMapper json) {
+                             HarnessAgent evaluationAgent,
+                             @Qualifier("assistantAgent") HarnessAgent assistantAgent,
+                             @Qualifier("workflowDialogueAgent") HarnessAgent workflowDialogueAgent,
+                             AgentLlmProperties llm, ObjectMapper json) {
         this.datasetMapper = datasetMapper;
         this.caseMapper = caseMapper;
         this.reportMapper = reportMapper;
         this.auditMapper = auditMapper;
         this.evaluationAgent = evaluationAgent;
+        this.assistantAgent = assistantAgent;
+        this.workflowDialogueAgent = workflowDialogueAgent;
         this.llm = llm;
         this.json = json;
     }
@@ -83,6 +108,7 @@ public class EvaluationService {
         d.setDescription(req.description());
         d.setScope(req.scope() == null || req.scope().isBlank() ? "llm_call" : req.scope().trim());
         d.setMode(req.mode() == null || req.mode().isBlank() ? "openjudge" : req.mode().trim());
+        d.setAgentType(req.agentType() == null || req.agentType().isBlank() ? "assistant" : req.agentType().trim());
         d.setStatus("ENABLED");
         d.setCreatedBy(operator);
         d.setCreatedAt(Instant.now());
@@ -101,6 +127,9 @@ public class EvaluationService {
         d.setDescription(req.description());
         if (req.mode() != null && !req.mode().isBlank()) {
             d.setMode(req.mode().trim());
+        }
+        if (req.agentType() != null && !req.agentType().isBlank()) {
+            d.setAgentType(req.agentType().trim());
         }
         if (req.status() != null && !req.status().isBlank()) {
             String s = req.status().trim().toUpperCase();
@@ -154,6 +183,8 @@ public class EvaluationService {
         c.setExpectedOutput(jsonOrNull(req.expectedOutput()));
         c.setToolSchema(jsonOrNull(req.toolSchema()));
         c.setExpectedTool(jsonOrNull(req.expectedTool()));
+        c.setExpectedSteps(req.expectedSteps() == null ? 1 : req.expectedSteps());
+        c.setExpectedPolicy(jsonOrNull(req.expectedPolicy()));
         c.setProvidedResponse(req.providedResponse());
         c.setCreatedAt(Instant.now());
         caseMapper.insert(c);
@@ -180,6 +211,12 @@ public class EvaluationService {
         if (req.expectedTool() != null) {
             c.setExpectedTool(jsonOrNull(req.expectedTool()));
         }
+        if (req.expectedSteps() != null) {
+            c.setExpectedSteps(req.expectedSteps());
+        }
+        if (req.expectedPolicy() != null) {
+            c.setExpectedPolicy(jsonOrNull(req.expectedPolicy()));
+        }
         if (req.providedResponse() != null) {
             c.setProvidedResponse(req.providedResponse());
         }
@@ -201,7 +238,8 @@ public class EvaluationService {
      * evaluation_report 落库。
      *
      * <p>openjudge：actual_response = 用例预置响应（跳过被测智能体执行）；
-     * execute：需要先运行被测智能体取实际输出，被测链路当前未接入，拒绝执行。</p>
+     * execute：逐用例真实运行被测智能体（agent_type 决定 assistant / workflow-dialogue），
+     * 收集实际响应文本 + 工具调用轨迹（实际步数与期望步数对比），单用例失败/超时视为不适用跳过判分。</p>
      */
     @Transactional
     public ReportView run(EvaluationRunRequest req, String operator) {
@@ -210,10 +248,6 @@ public class EvaluationService {
             throw new BizException(ErrorCode.BAD_REQUEST, "datasetId 不能为空");
         }
         EvaluationDataset d = requireDataset(req.datasetId(), tenantId);
-        if ("execute".equals(d.getMode())) {
-            throw new BizException(ErrorCode.BAD_REQUEST,
-                    "execute 模式需要被测智能体链路接入（当前未接入），请使用 openjudge 模式（数据集预置响应判分）");
-        }
         if ("DISABLED".equals(d.getStatus())) {
             throw new BizException(ErrorCode.BAD_REQUEST, "数据集已停用，禁止运行评测");
         }
@@ -224,6 +258,9 @@ public class EvaluationService {
         if (cases.isEmpty()) {
             throw new BizException(ErrorCode.BAD_REQUEST, "数据集无可评测用例，请先添加用例");
         }
+
+        ReActAgent subject = "execute".equals(d.getMode())
+                ? subjectDelegate(d.getAgentType()) : null;
 
         ObjectNode input = json.createObjectNode();
         input.put("scope", d.getScope());
@@ -240,9 +277,13 @@ public class EvaluationService {
             setOrNull(n, "expected_output", c.getExpectedOutput());
             setOrNull(n, "expected_tool", c.getExpectedTool());
             setOrNull(n, "tool_schema", c.getToolSchema());
+            n.put("expected_steps", c.getExpectedSteps() == null ? 1 : c.getExpectedSteps());
+            setOrNull(n, "expected_policy", c.getExpectedPolicy());
             if (c.getProvidedResponse() != null) {
                 n.put("provided_response", c.getProvidedResponse());
                 n.put("actual_response", c.getProvidedResponse()); // openjudge：预置响应直接判分
+            } else if ("execute".equals(d.getMode())) {
+                executeSubject(n, subject, tenantId, operator, c); // execute：真实运行被测智能体
             }
         }
         ArrayNode evals = input.putArray("evaluators");
@@ -338,17 +379,88 @@ public class EvaluationService {
         auditMapper.insert(a);
     }
 
+    /** execute 被测智能体 delegate：agent_type → 对应 HarnessAgent 的 ReActAgent，未知返回 null。 */
+    private ReActAgent subjectDelegate(String agentType) {
+        return switch (agentType) {
+            case "assistant" -> assistantAgent.getDelegate();
+            case "workflow-dialogue" -> workflowDialogueAgent.getDelegate();
+            default -> null;
+        };
+    }
+
+    /**
+     * execute 单用例执行：以唯一 sessionId 运行被测智能体（防会话状态串扰），
+     * 成功收集实际响应文本 + 工具调用轨迹；失败/超时/空回复该用例不注入 actual_response
+     * （判分器视为不适用，产出 INFO 发现，不中断整轮）。
+     */
+    private void executeSubject(ObjectNode n, ReActAgent subject, Long tenantId, String operator,
+                                EvaluationCase c) {
+        if (subject == null) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "未知被测智能体 execute 目标");
+        }
+        String userId = String.valueOf(tenantId);
+        String sessionId = "eval-exec-" + c.getDatasetId() + "-" + c.getSeq() + "-" + UUID.randomUUID();
+        RuntimeContext ctx = RuntimeContext.builder()
+                .userId(userId)
+                .sessionId(sessionId)
+                .put("tenantId", Long.class, tenantId)
+                .put("operator", String.class, operator)
+                .build();
+        try {
+            Msg result = subject.call(List.of(new UserMessage(c.getQuestion())), ctx)
+                    .block(EXECUTE_TIMEOUT);
+            String text = result == null ? null : result.getTextContent();
+            if (text == null || text.isBlank()) {
+                log.warn("评测 execute 用例 seq={} 返回空回复，判分跳过（不适用）", c.getSeq());
+                return;
+            }
+            n.put("actual_response", text);
+
+            // 轨迹：从会话状态上下文收集已执行工具调用（ASKING/PENDING 未执行不计入）
+            List<ToolUseBlock> executed = new ArrayList<>();
+            AgentState state = subject.getAgentState(userId, sessionId);
+            if (state != null && state.getContext() != null) {
+                for (Msg m : state.getContext()) {
+                    for (ToolUseBlock tub : m.getContentBlocks(ToolUseBlock.class)) {
+                        if (tub.getState() == ToolCallState.ASKING
+                                || tub.getState() == ToolCallState.PENDING) {
+                            continue;
+                        }
+                        executed.add(tub);
+                    }
+                }
+            }
+            ArrayNode calls = json.createArrayNode();
+            for (ToolUseBlock tub : executed) {
+                ObjectNode call = calls.addObject();
+                call.put("name", tub.getName());
+                call.set("args", json.valueToTree(tub.getInput()));
+            }
+            n.set("actual_tool_calls", calls);
+            n.put("actual_steps", executed.size() + 1); // 工具调用步 + 最终回复步
+            log.info("评测 execute seq={} 回复=[{}] calls={}", c.getSeq(), text, calls);
+        } catch (Exception e) {
+            log.warn("评测 execute 用例 seq={} 执行失败（{}），判分跳过（不适用）", c.getSeq(),
+                    e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
+        }
+    }
+
     private void validateDataset(DatasetView.SaveRequest req) {
         if (req.name() == null || req.name().isBlank()) {
             throw new BizException(ErrorCode.BAD_REQUEST, "数据集名称不能为空");
         }
         String scope = req.scope() == null ? "llm_call" : req.scope();
         String mode = req.mode() == null ? "openjudge" : req.mode();
+        String agentType = req.agentType() == null ? "assistant" : req.agentType();
         if (!"llm_call".equals(scope)) {
             throw new BizException(ErrorCode.BAD_REQUEST, "非法 scope（仅 llm_call）: " + scope);
         }
         if (!"openjudge".equals(mode) && !"execute".equals(mode)) {
             throw new BizException(ErrorCode.BAD_REQUEST, "非法 mode（openjudge/execute）: " + mode);
+        }
+        if (!"assistant".equals(agentType) && !"workflow-dialogue".equals(agentType)) {
+            throw new BizException(ErrorCode.BAD_REQUEST,
+                    "非法被测智能体 agent_type（assistant/workflow-dialogue）: " + agentType);
         }
     }
 
@@ -420,14 +532,15 @@ public class EvaluationService {
         Long count = caseMapper.selectCount(new LambdaQueryWrapper<EvaluationCase>()
                 .eq(EvaluationCase::getDatasetId, d.getId()));
         return new DatasetView(d.getId(), d.getName(), d.getDescription(), d.getScope(), d.getMode(),
-                d.getStatus(), count == null ? 0 : count.intValue(), d.getCreatedBy(),
+                d.getAgentType(), d.getStatus(), count == null ? 0 : count.intValue(), d.getCreatedBy(),
                 d.getCreatedAt(), d.getUpdatedAt());
     }
 
     private CaseView toCaseView(EvaluationCase c) {
         return new CaseView(c.getId(), c.getDatasetId(), c.getSeq(), c.getQuestion(),
                 c.getSystemPrompt(), parse(c.getExpectedOutput()), parse(c.getToolSchema()),
-                parse(c.getExpectedTool()), c.getProvidedResponse(), c.getCreatedAt());
+                parse(c.getExpectedTool()), c.getExpectedSteps(), parse(c.getExpectedPolicy()),
+                c.getProvidedResponse(), c.getCreatedAt());
     }
 
     private ReportView toReportView(EvaluationReport r) {

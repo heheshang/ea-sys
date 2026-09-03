@@ -9,6 +9,7 @@ public record DatasetView(
         String description,
         String scope,
         String mode,
+        String agentType,
         String status,
         int caseCount,
         String createdBy,
@@ -21,6 +22,7 @@ public record DatasetView(
             String description,
             String scope,
             String mode,
+            String agentType,
             String status) {
     }
 }

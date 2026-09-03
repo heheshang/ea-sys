@@ -649,6 +649,8 @@ export interface DatasetView {
   description: string | null
   scope: string
   mode: 'openjudge' | 'execute'
+  /** execute 模式被测智能体：assistant / workflow-dialogue（openjudge 忽略） */
+  agentType: 'assistant' | 'workflow-dialogue'
   status: 'ENABLED' | 'DISABLED'
   caseCount: number
   createdBy: string
@@ -662,6 +664,7 @@ export interface DatasetSaveRequest {
   description?: string | null
   scope?: string
   mode?: 'openjudge' | 'execute'
+  agentType?: 'assistant' | 'workflow-dialogue'
   status?: 'ENABLED' | 'DISABLED'
 }
 
@@ -675,6 +678,10 @@ export interface CaseView {
   expectedOutput: unknown
   toolSchema: unknown
   expectedTool: unknown
+  /** step_efficiency 期望步数基准（工具调用步 + 最终回复步，缺省 1） */
+  expectedSteps: number | null
+  /** policy_compliance 期望策略条款 [{keyword, prohibit}] */
+  expectedPolicy: unknown
   providedResponse: string | null
   createdAt: string
 }
@@ -687,6 +694,8 @@ export interface CaseSaveRequest {
   expectedOutput?: unknown
   toolSchema?: unknown
   expectedTool?: unknown
+  expectedSteps?: number | null
+  expectedPolicy?: unknown
   providedResponse?: string | null
 }
 
@@ -724,7 +733,7 @@ export interface ReportView {
   createdAt: string
 }
 
-/** 评测运行请求（evaluators 缺省 = 全量 11 个内置评测器）。 */
+/** 评测运行请求（evaluators 缺省 = 全量 15 个内置评测器）。 */
 export interface EvaluationRunRequest {
   datasetId: number
   evaluators?: string[]

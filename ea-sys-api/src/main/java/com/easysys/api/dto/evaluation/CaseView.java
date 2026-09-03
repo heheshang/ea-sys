@@ -14,6 +14,8 @@ public record CaseView(
         JsonNode expectedOutput,
         JsonNode toolSchema,
         JsonNode expectedTool,
+        Integer expectedSteps,
+        JsonNode expectedPolicy,
         String providedResponse,
         Instant createdAt) {
 
@@ -25,6 +27,8 @@ public record CaseView(
             JsonNode expectedOutput,
             JsonNode toolSchema,
             JsonNode expectedTool,
+            Integer expectedSteps,
+            JsonNode expectedPolicy,
             String providedResponse) {
     }
 }

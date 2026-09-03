@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /**
- * 评测中心（M8）：数据集管理 + 用例管理 + 11 内置评测器目录 + 批量运行（openjudge）+ 报告回看。
+ * 评测中心（M8）：数据集管理 + 用例管理 + 15 内置评测器目录 + 批量运行（openjudge/execute）+ 报告回看。
+ * execute 模式真实运行被测智能体（assistant / workflow-dialogue）并做执行维度评测。
  * 数据：GET/POST/PUT/DELETE /api/evaluations/{datasets,cases,run,reports}。
  */
 import { computed, reactive, ref } from 'vue'
@@ -50,6 +51,7 @@ const datasetForm = reactive<DatasetSaveRequest>({
   description: '',
   scope: 'llm_call',
   mode: 'openjudge',
+  agentType: 'assistant',
   status: 'ENABLED',
 })
 
@@ -59,6 +61,7 @@ function openDatasetCreate() {
   datasetForm.description = ''
   datasetForm.scope = 'llm_call'
   datasetForm.mode = 'openjudge'
+  datasetForm.agentType = 'assistant'
   datasetForm.status = 'ENABLED'
   datasetDialog.value = true
 }
@@ -69,6 +72,7 @@ function openDatasetEdit(row: DatasetView) {
   datasetForm.description = row.description ?? ''
   datasetForm.scope = row.scope
   datasetForm.mode = row.mode
+  datasetForm.agentType = row.agentType ?? 'assistant'
   datasetForm.status = row.status
   datasetDialog.value = true
 }
@@ -125,6 +129,7 @@ async function toggleDatasetStatus(row: DatasetView) {
       description: row.description ?? '',
       scope: row.scope,
       mode: row.mode,
+      agentType: row.agentType,
       status: row.status === 'ENABLED' ? 'DISABLED' : 'ENABLED',
     })
     ElMessage.success(row.status === 'ENABLED' ? '已停用' : '已启用')
@@ -164,21 +169,26 @@ const caseForm = reactive<CaseSaveRequest>({
   expectedOutput: undefined,
   toolSchema: undefined,
   expectedTool: undefined,
+  expectedSteps: 1,
+  expectedPolicy: undefined,
   providedResponse: '',
 })
 const expectedText = ref('')
 const toolSchemaText = ref('')
 const expectedToolText = ref('')
+const expectedPolicyText = ref('')
 
 function openCaseCreate() {
   editingCaseId.value = null
   caseForm.seq = undefined
   caseForm.question = ''
   caseForm.systemPrompt = ''
+  caseForm.expectedSteps = 1
   caseForm.providedResponse = ''
   expectedText.value = ''
   toolSchemaText.value = ''
   expectedToolText.value = ''
+  expectedPolicyText.value = ''
   caseDialog.value = true
 }
 
@@ -187,10 +197,12 @@ function openCaseEdit(c: CaseView) {
   caseForm.seq = c.seq ?? undefined
   caseForm.question = c.question
   caseForm.systemPrompt = c.systemPrompt ?? ''
+  caseForm.expectedSteps = c.expectedSteps ?? 1
   caseForm.providedResponse = c.providedResponse ?? ''
   expectedText.value = c.expectedOutput ? JSON.stringify(c.expectedOutput, null, 2) : ''
   toolSchemaText.value = c.toolSchema ? JSON.stringify(c.toolSchema, null, 2) : ''
   expectedToolText.value = c.expectedTool ? JSON.stringify(c.expectedTool, null, 2) : ''
+  expectedPolicyText.value = c.expectedPolicy ? JSON.stringify(c.expectedPolicy, null, 2) : ''
   caseDialog.value = true
 }
 
@@ -211,6 +223,7 @@ async function saveCase() {
     caseForm.expectedOutput = jsonOf(expectedText.value, '期望输出')
     caseForm.toolSchema = jsonOf(toolSchemaText.value, '工具 Schema')
     caseForm.expectedTool = jsonOf(expectedToolText.value, '期望工具')
+    caseForm.expectedPolicy = jsonOf(expectedPolicyText.value, '期望策略')
   } catch (e) {
     ElMessage.warning((e as Error).message)
     return
@@ -254,7 +267,7 @@ const running = ref(false)
 const lastReport = ref<ReportView | null>(null)
 
 const runnableDatasets = computed(() =>
-  (datasets.value ?? []).filter((d) => d.mode === 'openjudge' && d.status === 'ENABLED' && d.caseCount > 0),
+  (datasets.value ?? []).filter((d) => d.status === 'ENABLED' && d.caseCount > 0),
 )
 
 async function doRun() {
@@ -272,7 +285,7 @@ async function doRun() {
     ElMessage.success('评测完成，报告已生成')
     await refetchReports()
   } catch {
-    ElMessage.error('评测运行失败（execute 模式需被测链路，请使用 openjudge）')
+    ElMessage.error('评测运行失败')
   } finally {
     running.value = false
   }
@@ -352,6 +365,14 @@ const jsonText = (v: unknown): string => (v === undefined || v === null ? '-' : 
             <el-tag :type="row.mode === 'execute' ? 'warning' : 'success'" size="small">{{ row.mode }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="被测智能体" width="120">
+          <template #default="{ row }">
+            <template v-if="row.mode === 'execute'">
+              {{ row.agentType === 'workflow-dialogue' ? '工作流对话' : 'Assistant' }}
+            </template>
+            <template v-else>-</template>
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
             <el-switch
@@ -383,7 +404,7 @@ const jsonText = (v: unknown): string => (v === undefined || v === null ? '-' : 
       <template #header>
         <div class="panel-head">
           <span class="panel-title">内置评测器目录</span>
-          <span class="panel-sub">11 个：规则 5 + LLM-Judge 6（LLM 未启用时确定性近似）</span>
+          <span class="panel-sub">15 个：规则 9 + LLM-Judge 6（LLM 未启用时确定性近似）</span>
         </div>
       </template>
       <el-table :data="EVALUATOR_CATALOG" border stripe size="small">
@@ -409,13 +430,13 @@ const jsonText = (v: unknown): string => (v === undefined || v === null ? '-' : 
       <template #header>
         <div class="panel-head">
           <span class="panel-title">批量运行评测</span>
-          <span class="panel-sub">openjudge 模式：以预置响应判分（execute 需被测链路，暂不可运行）</span>
+          <span class="panel-sub">openjudge 以预置响应判分；execute 真实运行被测智能体（assistant / workflow-dialogue）</span>
         </div>
       </template>
       <div class="run-form">
         <el-select
           v-model="runDatasetId"
-          placeholder="选择数据集（openjudge / 已启用 / 有用例）"
+          placeholder="选择数据集（已启用 / 有用例）"
           clearable
           filterable
           style="width: 320px"
@@ -427,7 +448,7 @@ const jsonText = (v: unknown): string => (v === undefined || v === null ? '-' : 
           multiple
           collapse-tags
           collapse-tags-tooltip
-          placeholder="评测器（缺省全量 11 个）"
+          placeholder="评测器（缺省全量 15 个）"
           style="width: 420px"
         >
           <el-option v-for="e in EVALUATOR_CATALOG" :key="e.metric" :label="e.label" :value="e.metric" />
@@ -532,8 +553,14 @@ const jsonText = (v: unknown): string => (v === undefined || v === null ? '-' : 
         </el-form-item>
         <el-form-item label="模式">
           <el-select v-model="datasetForm.mode" style="width: 100%">
-            <el-option label="openjudge（预置响应判分，可运行）" value="openjudge" />
-            <el-option label="execute（需接入被测链路，当前不可运行）" value="execute" />
+            <el-option label="openjudge（预置响应判分）" value="openjudge" />
+            <el-option label="execute（真实运行被测智能体）" value="execute" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="datasetForm.mode === 'execute'" label="被测智能体">
+          <el-select v-model="datasetForm.agentType" style="width: 100%">
+            <el-option label="Assistant（智能助理）" value="assistant" />
+            <el-option label="Workflow Dialogue（工作流对话）" value="workflow-dialogue" />
           </el-select>
         </el-form-item>
         <el-form-item label="状态">
@@ -569,6 +596,8 @@ const jsonText = (v: unknown): string => (v === undefined || v === null ? '-' : 
             <div v-if="c.providedResponse" class="case-meta">预置响应：{{ c.providedResponse }}</div>
             <div v-if="c.expectedOutput" class="case-meta">期望输出：{{ jsonText(c.expectedOutput) }}</div>
             <div v-if="c.expectedTool" class="case-meta">期望工具：{{ jsonText(c.expectedTool) }}</div>
+            <div v-if="c.expectedSteps != null" class="case-meta">期望步数：{{ c.expectedSteps }}</div>
+            <div v-if="c.expectedPolicy" class="case-meta">期望策略：{{ jsonText(c.expectedPolicy) }}</div>
           </div>
         </div>
         <el-empty v-else-if="!casesLoading" description="该数据集暂无用例" :image-size="60" />
@@ -600,6 +629,13 @@ const jsonText = (v: unknown): string => (v === undefined || v === null ? '-' : 
         </el-form-item>
         <el-form-item label="期望工具">
           <el-input v-model="expectedToolText" type="textarea" :rows="2" placeholder='JSON（可空）：如 { "name": "search_kb" }' class="json-input" />
+        </el-form-item>
+        <el-form-item label="期望步数">
+          <el-input-number v-model="caseForm.expectedSteps" :min="1" style="width: 140px" />
+          <span class="form-hint">step_efficiency 基准（工具调用步 + 最终回复步，缺省 1）</span>
+        </el-form-item>
+        <el-form-item label="期望策略">
+          <el-input v-model="expectedPolicyText" type="textarea" :rows="3" placeholder='JSON（可空）：如 [{ "keyword": "确认后下发", "prohibit": false }]' class="json-input" />
         </el-form-item>
         <el-form-item label="预置响应">
           <el-input v-model="caseForm.providedResponse" type="textarea" :rows="3" placeholder="openjudge 判分对象（可空 = 不适用）" />
@@ -777,5 +813,10 @@ const jsonText = (v: unknown): string => (v === undefined || v === null ? '-' : 
 .json-input :deep(textarea) {
   font-family: ui-monospace, monospace;
   font-size: 12px;
+}
+.form-hint {
+  margin-left: 10px;
+  font-size: 12px;
+  color: #909399;
 }
 </style>

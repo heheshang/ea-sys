@@ -26,6 +26,9 @@ public class EvaluationDataset {
     /** openjudge / execute。 */
     private String mode;
 
+    /** execute 模式被测智能体：assistant / workflow-dialogue（openjudge 忽略）。 */
+    private String agentType;
+
     /** ENABLED / DISABLED。 */
     private String status;
 
@@ -81,6 +84,14 @@ public class EvaluationDataset {
 
     public void setMode(String mode) {
         this.mode = mode;
+    }
+
+    public String getAgentType() {
+        return agentType;
+    }
+
+    public void setAgentType(String agentType) {
+        this.agentType = agentType;
     }
 
     public String getStatus() {

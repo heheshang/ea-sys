@@ -46,6 +46,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -78,6 +81,9 @@ public class EvaluationService {
     private final HarnessAgent workflowDialogueAgent;
     private final AgentLlmProperties llm;
     private final ObjectMapper json;
+
+    /** LLM-Judge 判分并行池：8 并发足够（判分互相独立，串行 36 次判分曾拖慢全量 run 至 2 分钟）。 */
+    private static final ExecutorService JUDGE_POOL = Executors.newFixedThreadPool(8);
 
     public EvaluationService(EvaluationDatasetMapper datasetMapper, EvaluationCaseMapper caseMapper,
                              EvaluationReportMapper reportMapper, AgentAuditMapper auditMapper,
@@ -439,8 +445,10 @@ public class EvaluationService {
         injectJudgeScores(input, req.evaluators(), judgeRounds, tenantId, traceId, customsById);
 
         EvaluationModel planner = new EvaluationModel();
+        // 评测判分走 LLM 主位迄今 0 成功（大 JSON schema 输出常超 60s 或不合规），给 15s 尝试额度后即降级确定性，
+        // 避免每次 run 空等 60s；其余批处理（洞察/工作流等）保留 defaults() 的长推理额度。
         AgentOutcome outcome = AgentPolicy.run(evaluationAgent, planner, planner,
-                "evaluation_run", input, AgentRunConfig.defaults());
+                "evaluation_run", input, new AgentRunConfig(0.7, 2, 15_000));
         if (outcome.output() == null) {
             throw new BizException(ErrorCode.BAD_REQUEST,
                     "评测运行失败（确定性兜底也失效）: " + outcome.reason());
@@ -602,12 +610,13 @@ public class EvaluationService {
             metrics = EvaluationModel.ALL_METRICS;
         }
         ArrayNode caseArr = (ArrayNode) input.path("cases");
+        // 判分调用互相独立（LLM 生成慢、逐个串行会拖全量 run 数分钟），并行提交后按原顺序写回；
+        // score 内部已捕获全部异常返回 null，join 不会抛；upsertCall 为单语句原子更新，并发记账安全。
+        List<JudgeTask> tasks = new ArrayList<>();
         for (JsonNode cn : caseArr) {
             if (text(cn.path("actual_response")).isEmpty()) {
                 continue; // 与 EvaluationModel 判空口径一致：无实际响应不判分
             }
-            ObjectNode judgeScores = cn.path("judge_scores").isObject()
-                    ? (ObjectNode) cn.path("judge_scores") : null;
             for (String metric : metrics) {
                 if (EvaluationModel.RULE_METRICS.contains(metric)) {
                     continue; // 规则类评测器确定性判分，不走 LLM
@@ -616,19 +625,38 @@ public class EvaluationService {
                 if (custom != null && !"llm_judge".equals(custom.getCategory())) {
                     continue; // rule 类自定义评测器同规则判分
                 }
-                String prompt = custom != null ? custom.getJudgePrompt()
-                        : LlmJudgeScorer.defaultPrompt(metric);
-                Double s = judgeScorer.score(metric, prompt,
+                tasks.add(new JudgeTask(cn, metric, custom != null ? custom.getJudgePrompt()
+                        : LlmJudgeScorer.defaultPrompt(metric),
                         text(cn.path("question")), text(cn.path("actual_response")),
-                        text(cn.path("expected_output")), rounds, tenantId, traceId);
-                if (s != null) {
-                    if (judgeScores == null) {
-                        judgeScores = ((ObjectNode) cn).putObject("judge_scores");
-                    }
-                    judgeScores.put(metric, Math.round(s));
-                }
+                        text(cn.path("expected_output"))));
             }
         }
+        if (tasks.isEmpty()) {
+            return;
+        }
+        List<CompletableFuture<Double>> futures = new ArrayList<>(tasks.size());
+        for (JudgeTask t : tasks) {
+            futures.add(CompletableFuture.supplyAsync(() ->
+                    judgeScorer.score(t.metric(), t.prompt(), t.question(), t.response(),
+                            t.expected(), rounds, tenantId, traceId), JUDGE_POOL));
+        }
+        for (int i = 0; i < tasks.size(); i++) {
+            Double s = futures.get(i).join();
+            if (s != null) {
+                JudgeTask t = tasks.get(i);
+                ObjectNode judgeScores = t.caseNode().path("judge_scores").isObject()
+                        ? (ObjectNode) t.caseNode().path("judge_scores") : null;
+                if (judgeScores == null) {
+                    judgeScores = ((ObjectNode) t.caseNode()).putObject("judge_scores");
+                }
+                judgeScores.put(t.metric(), Math.round(s));
+            }
+        }
+    }
+
+    /** 一条 LLM-Judge 判分任务（并行提交，写回按原顺序）。 */
+    private record JudgeTask(JsonNode caseNode, String metric, String prompt,
+                             String question, String response, String expected) {
     }
 
     /** 指标名 custom_{id} → 自定义评测器 id；非 custom / 非法返回 null。 */

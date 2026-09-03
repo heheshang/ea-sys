@@ -16,6 +16,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -113,8 +114,10 @@ public class LlmJudgeScorer {
             List<Msg> msgs = List.of(
                     new SystemMessage(JUDGE_SYSTEM),
                     new UserMessage(filled));
+            // 与评测主链路 AgentRunConfig 15s 尝试额度对齐：LLM 判分挂起时快速降级，不无限阻塞当前请求线程
             ChatResponse resp = model.stream(msgs, List.of(),
-                    GenerateOptions.builder().stream(false).build()).blockFirst();
+                    GenerateOptions.builder().stream(false).build())
+                    .blockFirst(Duration.ofMillis(15_000));
             if (resp == null) {
                 return null;
             }

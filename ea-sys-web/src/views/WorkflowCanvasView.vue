@@ -1226,8 +1226,8 @@ onUnmounted(() => {
 
               <template v-else>
                 <div class="config-hint">
-                  手动触达：通过接口发起执行（POST /workflows/{{ workflowId ?? '«id»' }}/execute，画布含「人群」节点时自动圈选）；
-                  API 触发由外部系统携带单用户载荷入流；其余触发方式见上方选项。
+                  手动触达：在「人群管理」页对目标人群点「发起触达」执行（画布含「人群」节点时按节点圈选）；
+                  亦可通过接口发起（POST /workflows/{{ workflowId ?? '«id»' }}/execute）；API 触发由外部系统携带单用户载荷入流。
                 </div>
               </template>
             </template>

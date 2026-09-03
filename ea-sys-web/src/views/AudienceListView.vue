@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import RuleEditor from '../components/RuleEditor.vue'
-import type { Audience, AudienceMember, AudienceRequest, AudienceRule, AudienceSnapshot } from '../api/types'
+import type { Audience, AudienceMember, AudienceRequest, AudienceRule, AudienceSnapshot, DryRunResponse, WorkflowSummary, WorkflowView } from '../api/types'
 import { circleAudience, createAudience, deleteAudience, listAudiences, listMembers, listSnapshots, updateAudience } from '../api/audience'
+import { executeWorkflow, getWorkflow, listWorkflows } from '../api/workflow'
 
 /* ---------- 人群列表 ---------- */
 const loading = ref(false)
@@ -169,6 +171,77 @@ function openMembers(snap: AudienceSnapshot) {
   loadMembers()
 }
 
+/* ---------- 发起触达（手动触发：人群 → 已发布工作流） ---------- */
+const router = useRouter()
+const triggerDialogVisible = ref(false)
+const triggerAudience = ref<Audience | null>(null)
+const wfLoading = ref(false)
+const publishedWfs = ref<WorkflowSummary[]>([])
+const selectedWfId = ref<number | null>(null)
+const wfDetail = ref<WorkflowView | null>(null)
+const executing = ref(false)
+const execResult = ref<DryRunResponse | null>(null)
+
+const snapReady = computed(() => triggerAudience.value?.latestSnapshot?.status === 'ready')
+function wfHasAudienceNode(): boolean {
+  return wfDetail.value?.nodes.some((n) => n.type === 'AUDIENCE') ?? false
+}
+/** 画布有 AUDIENCE 节点 → 成员由节点圈选（快照可缺省）；否则必须已有本人群快照。 */
+const canTrigger = computed(
+  () => selectedWfId.value != null && wfDetail.value != null && (wfHasAudienceNode() || snapReady.value) && !executing.value,
+)
+/** 真实触达人数：通道级下发记录去重联系人（nodes[].contacts 为节点处理数，非触达）。 */
+const deliveredContacts = computed(
+  () => new Set((execResult.value?.deliveries ?? []).map((d) => d.contactId)).size,
+)
+
+async function openTrigger(row: Audience) {
+  triggerAudience.value = row
+  selectedWfId.value = null
+  wfDetail.value = null
+  execResult.value = null
+  triggerDialogVisible.value = true
+  wfLoading.value = true
+  try {
+    publishedWfs.value = (await listWorkflows()).filter((w) => w.status === 'published')
+  } finally {
+    wfLoading.value = false
+  }
+}
+
+async function onWfChange() {
+  wfDetail.value = null
+  execResult.value = null
+  if (selectedWfId.value == null) return
+  try {
+    wfDetail.value = await getWorkflow(selectedWfId.value)
+  } catch {
+    wfDetail.value = null
+    ElMessage.error('流程加载失败')
+  }
+}
+
+async function doTrigger() {
+  if (selectedWfId.value == null || !triggerAudience.value) return
+  executing.value = true
+  try {
+    const req = wfHasAudienceNode()
+      ? {}
+      : { audienceSnapshotId: triggerAudience.value.latestSnapshot!.id }
+    execResult.value = await executeWorkflow(selectedWfId.value, req)
+    if (execResult.value.error) {
+      ElMessage.error(`执行未完成：${execResult.value.error}`)
+    } else {
+      ElMessage.success(`触达已下发：${deliveredContacts.value} 人`)
+    }
+  } catch {
+    execResult.value = null
+    ElMessage.error('执行失败：请确认流程已发布、人群快照有效')
+  } finally {
+    executing.value = false
+  }
+}
+
 const fmtTime = (t: string | null | undefined) => (t ? new Date(t).toLocaleString() : '—')
 function statusType(s: string): 'success' | 'info' | 'warning' | 'danger' {
   if (s === 'published') return 'success'
@@ -231,6 +304,7 @@ function snapStatusType(s: string) {
               {{ circlingId === row.id ? '圈选中…' : '圈选快照' }}
             </el-button>
             <el-button link type="primary" @click="openSnapshots(row)">快照</el-button>
+            <el-button link type="primary" @click="openTrigger(row)">发起触达</el-button>
             <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
             <el-button link type="danger" @click="remove(row)">删除</el-button>
           </template>
@@ -332,6 +406,72 @@ function snapStatusType(s: string) {
         @current-change="loadMembers"
         @size-change="memberPage = 1; loadMembers()"
       />
+    </el-dialog>
+
+    <!-- 发起触达 -->
+    <el-dialog v-model="triggerDialogVisible" :title="`发起触达 · ${triggerAudience?.name ?? ''}`" width="600px">
+      <el-form label-width="86px">
+        <el-form-item label="触达人群">
+          <div>
+            <b>{{ triggerAudience?.name }}</b>
+            <el-tag v-if="snapReady" type="success" size="small" class="snap-count">
+              最新快照 {{ triggerAudience?.latestSnapshot?.memberCount }} 人
+            </el-tag>
+            <span v-else class="muted">（未圈选，需先「圈选快照」）</span>
+          </div>
+        </el-form-item>
+        <el-form-item label="执行流程">
+          <el-select
+            v-model="selectedWfId"
+            placeholder="选择已发布工作流"
+            style="width: 100%"
+            :loading="wfLoading"
+            @change="onWfChange"
+          >
+            <el-option v-for="w in publishedWfs" :key="w.id" :label="`#${w.id} ${w.name}（v${w.version}）`" :value="w.id" />
+          </el-select>
+          <div v-if="!wfLoading && !publishedWfs.length" class="rule-tip">
+            暂无已发布工作流，请先在「工作流」页创建并发布画布。
+          </div>
+        </el-form-item>
+        <el-form-item v-if="wfDetail" label="成员来源">
+          <el-alert
+            v-if="wfHasAudienceNode()"
+            type="info"
+            :closable="false"
+            show-icon
+            title="画布含「人群」节点：执行时按节点圈选成员，此处人群不参与圈选。"
+          />
+          <el-alert
+            v-else-if="snapReady"
+            type="success"
+            :closable="false"
+            show-icon
+            title="画布无「人群」节点：按当前人群最新快照执行。"
+          />
+          <el-alert
+            v-else
+            type="warning"
+            :closable="false"
+            show-icon
+            title="该流程无「人群」节点，需先圈选快照后才能发起。"
+          />
+        </el-form-item>
+        <el-form-item v-if="execResult" label="执行结果">
+          <el-alert v-if="execResult.error" type="error" :closable="false" :title="execResult.error" />
+          <div v-else>
+            <el-tag type="success" size="small">已触达 {{ deliveredContacts }} 人</el-tag>
+            <el-tag type="info" size="small" class="snap-count">通道记录 {{ execResult.deliveries.length }} 条</el-tag>
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="triggerDialogVisible = false">关闭</el-button>
+        <el-button @click="router.push('/monitoring')">触达监控</el-button>
+        <el-button type="primary" :loading="executing" :disabled="!canTrigger" @click="doTrigger">
+          {{ execResult ? '再次执行' : '确认执行' }}
+        </el-button>
+      </template>
     </el-dialog>
   </div>
 </template>

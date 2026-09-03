@@ -170,9 +170,10 @@ export interface WorkflowSnapshotList {
   dryRunSnapshots: WorkflowDryRun[]
 }
 
-/** 干跑/执行请求（DryRunRequest）：对已发布版本 + 冻结快照成员模拟执行。 */
+/** 干跑/执行请求（DryRunRequest）：对已发布版本 + 冻结快照成员模拟执行。
+ * audienceSnapshotId 可缺省——画布含 AUDIENCE 人群节点时成员由节点圈选，此参数仅为旧流程兜底（对齐后端 DryRunRequest record）。 */
 export interface DryRunRequest {
-  audienceSnapshotId: number
+  audienceSnapshotId?: number
 }
 
 /** 批量随机创建联系人请求（POST /api/contacts/batch）。 */

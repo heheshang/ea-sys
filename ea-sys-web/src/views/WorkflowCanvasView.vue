@@ -56,7 +56,7 @@ const workflowId = computed(() => (route.params.id ? Number(route.params.id) : n
  * Vue Flow 的 Node/Edge 是联合类型且部分字段可选，精确泛型会引发深度实例化。
  * 数组保留库默认类型，业务访问统一走 cast 辅助（data 在 push/load 时总是写入）。
  */
-type CanvasNodeData = { real: WorkflowNodeSpec; pendingConnect?: boolean }
+type CanvasNodeData = { real: WorkflowNodeSpec; pendingConnect?: boolean; connectableTarget?: boolean }
 type CanvasEdgeData = { condition: ConditionRule | null }
 
 const nodes = ref<Node[]>([])
@@ -170,7 +170,7 @@ async function addFromPalette(type: WorkflowNodeType) {
   selectNode(key)
   // 新落画布节点不进入待连状态（用户通常先去配置）
   pendingConnectSrc.value = null
-  syncPendingClass()
+  syncConnectClasses()
 }
 
 /* ---------- 选中 / 双选连线 ---------- */
@@ -184,13 +184,26 @@ const pendingConnectLabel = computed(() => {
   return n ? nodeLabel(n) : pendingConnectSrc.value
 })
 
-/** 待连视觉标记同步到节点 data（CanvasNode 据此加高亮样式）。 */
-function syncPendingClass() {
+/** 待连态下可连目标集合：进入待连后自动高亮这些节点。 */
+const connectableTargets = computed(() => {
+  const set = new Set<string>()
+  const src = pendingConnectSrc.value
+  if (!src) return set
+  for (const n of allNodes()) {
+    if (n.id !== src && !connectError(src, n.id)) set.add(n.id)
+  }
+  return set
+})
+
+/** 待连视觉标记同步到节点 data：pendingConnect（本节点为待连源）+ connectableTarget（可作为连线目标）。 */
+function syncConnectClasses() {
   for (const n of allNodes()) {
     const d = dataOf(n)
     const pending = pendingConnectSrc.value === n.id
-    if (!!d.pendingConnect !== pending) {
+    const targetable = !!pendingConnectSrc.value && connectableTargets.value.has(n.id)
+    if (!!d.pendingConnect !== pending || !!d.connectableTarget !== targetable) {
       d.pendingConnect = pending
+      d.connectableTarget = targetable
       n.data = { ...d }
     }
   }
@@ -206,7 +219,7 @@ function selectNode(id: string) {
     }
     selectedKind.value = 'node'
     selectedId.value = id
-    syncPendingClass()
+    syncConnectClasses()
     return
   }
   // 再点已选中节点：退出待连；首次点击节点：进入待连
@@ -214,11 +227,11 @@ function selectNode(id: string) {
   pendingConnectSrc.value = reselect ? null : id
   selectedKind.value = 'node'
   selectedId.value = id
-  syncPendingClass()
+  syncConnectClasses()
 }
 function selectEdge(id: string) {
   pendingConnectSrc.value = null
-  syncPendingClass()
+  syncConnectClasses()
   selectedKind.value = 'edge'
   selectedId.value = id
 }
@@ -226,7 +239,7 @@ function clearSelection() {
   pendingConnectSrc.value = null
   selectedKind.value = null
   selectedId.value = ''
-  syncPendingClass()
+  syncConnectClasses()
 }
 
 function deleteSelected() {
@@ -249,33 +262,28 @@ function deleteSelected() {
 
 const CHANNEL_IDS = ['sms', 'email', 'wechat']
 
+/** 纯校验（无副作用）：返回拒绝原因，null 表示可连。供 canConnect 弹窗与可连目标高亮共用。 */
+function connectError(src: string, tgt: string): string | null {
+  if (src === tgt) return '不能自连'
+  const srcNode = allNodes().find((n) => n.id === src)
+  const tgtNode = allNodes().find((n) => n.id === tgt)
+  if (!srcNode || !tgtNode) return '节点不存在'
+  const srcType = (realOf(srcNode).type as WorkflowNodeType) ?? 'END'
+  const tgtType = (realOf(tgtNode).type as WorkflowNodeType) ?? 'TRIGGER'
+  if (srcType === 'END') return 'END 节点不能有出边'
+  if (tgtType === 'TRIGGER') return 'TRIGGER 节点不能有入边'
+  if (allEdges().some((e) => e.source === src && e.target === tgt)) return '两点之间已有连线'
+  if (srcType !== 'CONDITION' && srcType !== 'AGENT_SPLIT') {
+    if (allEdges().some((e) => e.source === src)) return '该节点已有一条出边（仅 CONDITION 可多路分流）'
+  }
+  return null
+}
+
 function canConnect(conn: Connection): boolean {
   if (!conn.source || !conn.target) return false
-  const src = allNodes().find((n) => n.id === conn.source)
-  const tgt = allNodes().find((n) => n.id === conn.target)
-  if (!src || !tgt) return false
-  const srcType = (realOf(src).type as WorkflowNodeType) ?? 'END'
-  const tgtType = (realOf(tgt).type as WorkflowNodeType) ?? 'TRIGGER'
-  if (srcType === 'END') {
-    ElMessage.warning('END 节点不能有出边')
-    return false
-  }
-  if (tgtType === 'TRIGGER') {
-    ElMessage.warning('TRIGGER 节点不能有入边')
-    return false
-  }
-  if (allEdges().some((e) => e.source === conn.source && e.target === conn.target)) {
-    ElMessage.warning('两点之间已有连线')
-    return false
-  }
-  if (srcType !== 'CONDITION' && srcType !== 'AGENT_SPLIT') {
-    if (allEdges().some((e) => e.source === conn.source)) {
-      ElMessage.warning('该节点已有一条出边（仅 CONDITION 可多路分流）')
-      return false
-    }
-  }
-  if (conn.source === conn.target) {
-    ElMessage.warning('不能自连')
+  const err = connectError(conn.source, conn.target)
+  if (err) {
+    ElMessage.warning(err)
     return false
   }
   return true
@@ -997,7 +1005,7 @@ onUnmounted(() => {
 
     <!-- 双选连线提示条 -->
     <div v-if="pendingConnectSrc" class="connect-hint">
-      已选中「{{ pendingConnectLabel }}」：再点击目标节点完成连线（点击空白取消）
+      已选中「{{ pendingConnectLabel }}」：绿色节点为可连目标，点击即连线（点击空白取消）
     </div>
 
     <div class="canvas-body">

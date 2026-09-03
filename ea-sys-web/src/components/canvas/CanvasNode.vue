@@ -180,7 +180,10 @@ function onNodeMouseLeave() {
 <template>
   <div
     class="wf-node"
-    :class="{ 'wf-node--pending': props.data?.pendingConnect }"
+    :class="{
+      'wf-node--pending': props.data?.pendingConnect,
+      'wf-node--targetable': props.data?.connectableTarget,
+    }"
     :style="{ borderColor: meta.color, width: nodeWidth + 'px', height: nodeHeight + 'px' }"
     @mousemove="onNodeMouseMove"
     @mouseleave="onNodeMouseLeave"
@@ -225,6 +228,13 @@ function onNodeMouseLeave() {
   outline: 2px dashed #409eff;
   outline-offset: 3px;
   box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.12);
+}
+/* 双选连线：可连接目标节点（绿色虚圈 + 指针） */
+.wf-node--targetable {
+  outline: 2px dashed #67c23a;
+  outline-offset: 3px;
+  box-shadow: 0 0 0 3px rgba(103, 194, 58, 0.14);
+  cursor: copy;
 }
 /* ProcessOn 式连接锚点：悬停节点时显现，最近方向高亮；上层的 source 锚点可拖出连线 */
 :deep(.wf-anchor) {

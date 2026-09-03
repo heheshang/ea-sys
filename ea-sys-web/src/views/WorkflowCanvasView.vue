@@ -203,7 +203,7 @@ function deleteSelected() {
 
 /* ---------- 连线 ---------- */
 
-const CHANNEL_IDS = ['sms', 'email']
+const CHANNEL_IDS = ['sms', 'email', 'wechat']
 
 function canConnect(conn: Connection): boolean {
   if (!conn.source || !conn.target) return false

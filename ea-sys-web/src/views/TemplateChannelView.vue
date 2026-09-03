@@ -16,6 +16,7 @@ const fm = {
   name: '{{name}}',
   phone: '{{phone}}',
   email: '{{email}}',
+  externalId: '{{externalId}}',
 }
 const fmPlaceholder = `FreeMarker 模板，如：您好 ${fm.name}，限时促销已开启！`
 
@@ -32,6 +33,7 @@ const channelCount = computed(() => {
     total: rows.length,
     sms: rows.filter((t) => t.channel === 'sms').length,
     email: rows.filter((t) => t.channel === 'email').length,
+    wechat: rows.filter((t) => t.channel === 'wechat').length,
   }
 })
 
@@ -42,8 +44,10 @@ function fmtTime(iso: string): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-function channelType(ch: string): 'success' | 'warning' {
-  return ch === 'sms' ? 'success' : 'warning'
+function channelType(ch: string): 'success' | 'warning' | 'primary' {
+  if (ch === 'sms') return 'success'
+  if (ch === 'wechat') return 'primary'
+  return 'warning'
 }
 
 /* ---------- 新建 / 编辑 ---------- */
@@ -126,22 +130,28 @@ function showPreview(row: Template) {
     </div>
 
     <el-row :gutter="12" class="stats">
-      <el-col :span="8">
+      <el-col :span="6">
         <el-card shadow="never" class="stat-card">
           <div class="stat-num">{{ channelCount.total }}</div>
           <div class="stat-label">启用模板</div>
         </el-card>
       </el-col>
-      <el-col :span="8">
+      <el-col :span="6">
         <el-card shadow="never" class="stat-card">
           <div class="stat-num stat-sms">{{ channelCount.sms }}</div>
           <div class="stat-label">短信 SMS</div>
         </el-card>
       </el-col>
-      <el-col :span="8">
+      <el-col :span="6">
         <el-card shadow="never" class="stat-card">
           <div class="stat-num stat-email">{{ channelCount.email }}</div>
           <div class="stat-label">邮件 Email</div>
+        </el-card>
+      </el-col>
+      <el-col :span="6">
+        <el-card shadow="never" class="stat-card">
+          <div class="stat-num stat-wechat">{{ channelCount.wechat }}</div>
+          <div class="stat-label">微信 WeChat</div>
         </el-card>
       </el-col>
     </el-row>
@@ -194,6 +204,7 @@ function showPreview(row: Template) {
           <el-radio-group v-model="form.channel">
             <el-radio value="sms">短信 SMS</el-radio>
             <el-radio value="email">邮件 Email</el-radio>
+            <el-radio value="wechat">微信 WeChat</el-radio>
           </el-radio-group>
         </el-form-item>
         <el-form-item label="名称">
@@ -202,7 +213,7 @@ function showPreview(row: Template) {
         <el-form-item label="内容">
           <el-input v-model="form.content" type="textarea" :rows="6" :placeholder="fmPlaceholder" />
           <div class="form-tip">
-            可用变量：<code>{{ fm.name }}</code> 姓名、<code>{{ fm.phone }}</code> 手机号、<code>{{ fm.email }}</code> 邮箱；保存时后端做语法渲染校验。
+            可用变量：<code>{{ fm.name }}</code> 姓名、<code>{{ fm.phone }}</code> 手机号、<code>{{ fm.email }}</code> 邮箱、<code>{{ fm.externalId }}</code> 外部ID（微信模板建议用 <code>{{ fm.externalId }}</code>，渲染时以 <code>!</code> 防空，如 <code>{{ fm.externalId }}!</code>）；保存时后端做语法渲染校验。
           </div>
         </el-form-item>
       </el-form>
@@ -261,6 +272,9 @@ function showPreview(row: Template) {
 }
 .stat-email {
   color: #e6a23c;
+}
+.stat-wechat {
+  color: #67c23a;
 }
 .stat-label {
   font-size: 12px;

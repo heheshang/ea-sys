@@ -3,7 +3,7 @@
  * 触达监控（M3）：执行历史列表（干跑/真实触达）+ 执行详情回放。
  * 列表 GET /api/workflows/executions，行点击 → GET /api/workflows/executions/{id}/report。
  */
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
 import { ElMessage } from 'element-plus'
 import { listWorkflowExecutions, getExecutionReport, listWorkflows } from '../api/workflow'
@@ -44,6 +44,7 @@ const selected = ref<ExecutionSummary | null>(null)
 async function openDetail(row: ExecutionSummary) {
   selected.value = row
   report.value = null
+  deliveryPage.value = 1
   detailVisible.value = true
   detailLoading.value = true
   try {
@@ -54,6 +55,16 @@ async function openDetail(row: ExecutionSummary) {
     detailLoading.value = false
   }
 }
+
+/* 通道触达日志分页（report 全量返回，此处仅分页展示）。 */
+const deliveryPage = ref(1)
+const deliveryPageSize = ref(20)
+
+const pagedDeliveries = computed(() => {
+  const all = report.value?.deliveries ?? []
+  const start = (deliveryPage.value - 1) * deliveryPageSize.value
+  return all.slice(start, start + deliveryPageSize.value)
+})
 
 function fmtTime(iso: string | null | undefined): string {
   if (!iso) return '-'
@@ -183,7 +194,7 @@ function statusType(status: string): 'success' | 'danger' | 'warning' | 'info' {
           </el-table>
 
           <h4 class="delivery-title">通道触达日志</h4>
-          <el-table v-if="(report.deliveries ?? []).length" :data="report.deliveries ?? []" size="small" border>
+          <el-table v-if="(report.deliveries ?? []).length" :data="pagedDeliveries" size="small" border>
             <el-table-column label="时间" width="150">
               <template #default="{ row }">{{ fmtTimeSec(row.createdAt) }}</template>
             </el-table-column>
@@ -201,6 +212,16 @@ function statusType(status: string): 'success' | 'danger' | 'warning' | 'info' {
             <el-table-column prop="channelMsgId" label="消息ID" min-width="180" show-overflow-tooltip />
             <el-table-column prop="error" label="错误" min-width="140" show-overflow-tooltip />
           </el-table>
+          <el-pagination
+            v-if="(report.deliveries ?? []).length"
+            v-model:current-page="deliveryPage"
+            v-model:page-size="deliveryPageSize"
+            :total="(report.deliveries ?? []).length"
+            :page-sizes="[10, 20, 50, 100]"
+            layout="total, sizes, prev, pager, next, jumper"
+            class="delivery-pager"
+            @size-change="deliveryPage = 1"
+          />
           <el-empty v-else description="无通道触达记录（全部被频率/幂等拦截或未下发）" :image-size="60" />
         </template>
         <el-empty v-else-if="!detailLoading" description="无报告数据" :image-size="80" />
@@ -233,6 +254,10 @@ function statusType(status: string): 'success' | 'danger' | 'warning' | 'info' {
   margin: 14px 0 8px;
   font-size: 13px;
   color: var(--el-text-color-primary, #303133);
+}
+.delivery-pager {
+  justify-content: flex-end;
+  margin-top: 8px;
 }
 .report-error {
   margin-top: 8px;

@@ -47,7 +47,7 @@ public interface LlmUsageMapper extends BaseMapper<LlmUsage> {
     int markRound(@Param("tenantId") Long tenantId, @Param("agentType") String agentType,
                   @Param("sessionId") String sessionId);
 
-    /** 驾驶舱：近 7 天全部通道 LLM 用量聚合（calls 含批处理与聊天，rounds 仅聊天计）。 */
+    /** 驾驶舱：近 7 天全部通道 LLM 用量聚合（calls 含批处理与聊天，rounds 仅聊天计；token 为权威全量）。 */
     @InterceptorIgnore(tenantLine = "true")
     @Select("""
             SELECT COALESCE(SUM(calls), 0)        AS calls,

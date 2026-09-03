@@ -10,6 +10,7 @@ import com.networknt.schema.SpecificationVersion;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.UserMessage;
+import io.agentscope.core.model.ChatUsage;
 import io.agentscope.harness.agent.HarnessAgent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,6 +18,7 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 批处理智能体治理策略（AgentScope Java 2.0 承载）：执行由调用方注入的 {@link HarnessAgent}
@@ -61,9 +63,12 @@ public final class AgentPolicy {
         String status = "SUCCESS";
         String reason = null;
         JsonNode candidate = null;
+        // 本次调用的真实 LLM 用量（确定性模型 / 调用失败时为 null）→ 落审计 tokens 列，
+        // 驾驶舱按 Agent/按模型/趋势的 token 统计由此出数（llm_usage 仅服务总卡拆分与上下文构成）。
+        AtomicReference<ChatUsage> usageRef = new AtomicReference<>();
 
         try {
-            candidate = call(agent, action, input, cfg);
+            candidate = call(agent, action, input, cfg, usageRef);
             if (!matches(planner.schema(), candidate)) {
                 candidate = null;
                 status = "FALLBACK";
@@ -98,18 +103,23 @@ public final class AgentPolicy {
         log.info("agent {} {} status={} reason={} confidence={} cost={}ms",
                 planner.type(), action, status, reason, confidence, durationMs);
 
+        ChatUsage usage = usageRef.get();
+        Integer tokens = usage == null ? null : usage.getInputTokens() + usage.getOutputTokens();
         AgentCall audit = new AgentCall(planner.type(), action, status, reason, input, candidate,
                 candidate == null ? null : candidate.path("strategy_version").asText(null),
                 candidate == null ? null : (candidate.path("confidence").isNumber() ? candidate.path("confidence").asDouble() : null),
-                agentModel(agent), null, durationMs);
+                agentModel(agent), tokens, durationMs);
         return new AgentOutcome(status, reason, candidate, audit);
     }
 
     /**
      * 主提供方调用：HarnessAgent 同步执行（模型位产 JSON 文本，框架 native 结构化路径解析）。
      * 超时由 cfg.timeoutMs 约束（确定性即时返回；LLM 接入时调用方传入对应超时）。
+     *
+     * @param usageRef 出参：真实 LLM 调用的 token 用量（结果消息携带；确定性模型 / 调用失败为 null）
      */
-    private static JsonNode call(HarnessAgent agent, String action, JsonNode input, AgentRunConfig cfg) throws Exception {
+    private static JsonNode call(HarnessAgent agent, String action, JsonNode input, AgentRunConfig cfg,
+                                 AtomicReference<ChatUsage> usageRef) throws Exception {
         RuntimeContext ctx = RuntimeContext.builder()
                 .userId(tenantIdOr("anonymous"))
                 .sessionId(action)
@@ -119,6 +129,7 @@ public final class AgentPolicy {
         if (result == null) {
             throw new IllegalStateException("agent call returned null");
         }
+        usageRef.set(result.getChatUsage());
         String text = result.getTextContent();
         if (text == null || text.isBlank()) {
             throw new IllegalStateException("agent call returned empty content");

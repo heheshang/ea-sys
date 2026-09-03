@@ -132,10 +132,12 @@ public class CockpitService {
                         lng(r, "sum_tokens"), scale(bd(r, "sum_cost"))))
                 .toList();
 
-        // 调用 = audit 批处理 + 聊天通道 llm_usage（防双计）；总 Token = audit + llm_usage 输入+输出
+        // 调用 = audit 批处理 + 聊天通道 llm_usage（防双计）；总 Token = llm_usage 输入+输出权威全量
+        // （含超时但服务端已消耗的调用与未来聊天 LLM —— 与输入/输出/缓存命中三卡同源自洽；
+        //   分组表按 audit 视角，正常无超时时两者相等，异常时段总卡 ≥ 分组和是真实消耗差）。
         CockpitOverviewView.LlmOverview llmView = new CockpitOverviewView.LlmOverview(
                 llm.isEnabled(), llm.getModelId(), agg.calls + agg.chatCalls, agg.success, agg.fallback, agg.error,
-                agg.avgDurationMs, agg.sumTokens + agg.usageTokens, scale(agg.sumCost),
+                agg.avgDurationMs, agg.usageTokens, scale(agg.sumCost),
                 round4(agg.schemaValidRate), round4(agg.errorRate), round4(agg.fallbackRate),
                 agg.rounds, agg.sumInputTokens, agg.sumOutputTokens, agg.sumCachedTokens,
                 lastChatContext(tenantId),
@@ -396,7 +398,7 @@ public class CockpitService {
         agg.errorRate = agg.calls > 0 ? (double) agg.error / agg.calls : 0;
         agg.fallbackRate = agg.calls > 0 ? (double) agg.fallback / agg.calls : 0;
 
-        // 合并 llm_usage（聊天明细）:chatCalls 供卡面「调用」= audit + 聊天；usageTokens = 输入+输出。
+        // 合并 llm_usage（聊天明细）:chatCalls 供卡面「调用」= audit + 聊天；chatUsageTokens = 聊天专属 token。
         // 速率/时长/成本保持 audit 口径（llm_usage 无状态字段）；rounds 仅聊天计。
         Map<String, Object> usage = llmUsageService.aggregate(tenantId);
         agg.chatCalls = lng(usage, "chat_calls");

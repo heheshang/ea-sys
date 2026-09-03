@@ -103,7 +103,7 @@ M0–M6 核心闭环完成：五模块（common / engine / agent / channel / api
 ## 本地开发
 
 ```bash
-# 1. 启动开发库（PostgreSQL 16）
+# 1. 启动开发基础设施（PostgreSQL + Redis）
 docker compose up -d
 
 # 2. 构建 + 测试（colima / Docker Desktop 通用）

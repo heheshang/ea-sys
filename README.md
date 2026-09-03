@@ -13,6 +13,47 @@
   → 触达记录 + 回执回流 → 留存看板 → 运营迭代优化
 ```
 
+## 系统架构
+
+```mermaid
+flowchart LR
+    subgraph 前端[前端 Vue3 + TS]
+      Canvas[DAG 画布<br/>Vue Flow]
+      Audit[人群管理]
+      Monitor[触达监控]
+      Board[留存看板]
+    end
+    subgraph API[API 层 Spring Boot]
+      GW[REST API<br/>JWT + 租户上下文]
+    end
+    subgraph 核心[核心域]
+      WE[工作流引擎<br/>DAG 校验/状态机/调度]
+      AG[智能体编排<br/>AgentScope Java 2.0]
+      EX[触达执行器<br/>幂等/限流/频率控制]
+    end
+    subgraph 基础设施[基础设施]
+      MQ[(Redis Streams<br/>事件队列)]
+      PG[(PostgreSQL 16)]
+      RD[(Redis)]
+    end
+    subgraph 通道[触达通道]
+      S[短信]
+      M[邮件]
+      W[微信模板消息]
+      P[App 推送<br/>预留 SPI]
+    end
+    Canvas & Monitor & Board --> GW
+    Audit --> GW
+    GW --> WE
+    WE --> AG
+    WE <--> MQ
+    WE --> EX
+    EX --> S & M & W & P
+    WE & AG & EX --> PG
+    WE & AG & EX --> RD
+    PG -.数据回流.-> Board
+```
+
 ## 技术栈
 
 | 层 | 选型 |

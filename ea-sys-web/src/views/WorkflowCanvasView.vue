@@ -444,8 +444,8 @@ async function load() {
       if (n > NODE_KEY_COUNTERS[t]) NODE_KEY_COUNTERS[t] = n
     }
   })
-  name.value = wf.name
-  description.value = wf.description
+  name.value = wf.name ?? ''
+  description.value = wf.description ?? ''
   status.value = wf.status
   version.value = wf.version
   setNodes(

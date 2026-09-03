@@ -297,12 +297,13 @@ async function doRun() {
   }
   running.value = true
   lastReport.value = null
+  ElMessage.info('评测运行中，约需 1-3 分钟，请耐心等待')
   try {
     lastReport.value = await runEvaluation({
       datasetId: runDatasetId.value,
       evaluators: runEvaluators.value,
       judgeRounds: runJudgeRounds.value,
-    })
+    }, { timeout: 0 })
     ElMessage.success('评测完成，报告已生成')
     await refetchReports()
   } catch {

@@ -1,4 +1,5 @@
 import { http } from './http'
+import type { AxiosRequestConfig } from 'axios'
 import type {
   ApiResponse,
   CaseSaveRequest,
@@ -92,8 +93,11 @@ export async function deleteCase(id: number): Promise<void> {
 }
 
 /** POST /api/evaluations/run —— 批量运行评测（AgentPolicy 确定性评测 + 审计），返回落库报告。 */
-export async function runEvaluation(req: EvaluationRunRequest): Promise<ReportView> {
-  const { data } = await http.post<ApiResponse<ReportView>>('/evaluations/run', req)
+export async function runEvaluation(
+  req: EvaluationRunRequest,
+  config?: AxiosRequestConfig,
+): Promise<ReportView> {
+  const { data } = await http.post<ApiResponse<ReportView>>('/evaluations/run', req, config)
   return data.data
 }
 

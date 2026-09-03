@@ -70,7 +70,7 @@ export function nodeHeightOf(nodeKey: string | undefined, edges: Array<{ source:
  * 宽度按名称与摘要最长行自适应（NODE_MIN_W-NODE_MAX_W），高度随摘要行数增长，
  * 与 dagre 布局 H（nodeHeightOf）保持一致。
  */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { Handle, Position, useVueFlow } from '@vue-flow/core'
 import type { NodeProps } from '@vue-flow/core'
 import type { WorkflowNodeType } from '../../api/types'
@@ -140,8 +140,41 @@ const nodeWidth = computed(() => {
   )
 })
 const nodeHeight = computed(() => NODE_H + shownLines.value.length * SUMMARY_LINE_H)
-const hasTarget = computed(() => type.value !== 'TRIGGER')
-const hasSource = computed(() => type.value !== 'END')
+/** 节点是否可作为连线落点（TRIGGER 不能有入边）。 */
+const canBeTarget = computed(() => type.value !== 'TRIGGER')
+/** 节点是否可拖出连线（END 不能有出边）。 */
+const canBeSource = computed(() => type.value !== 'END')
+
+/* ---------- ProcessOn 式连接锚点 ---------- */
+
+const dirs = ['top', 'right', 'bottom', 'left'] as const
+type Dir = (typeof dirs)[number]
+const POS_MAP: Record<Dir, Position> = {
+  top: Position.Top,
+  right: Position.Right,
+  bottom: Position.Bottom,
+  left: Position.Left,
+}
+
+/** 鼠标相对节点最近的方向：该方向锚点高亮（跟随鼠标）。 */
+const activeDir = ref<Dir | null>(null)
+
+function onNodeMouseMove(e: MouseEvent) {
+  const el = e.currentTarget as HTMLElement
+  const r = el.getBoundingClientRect()
+  const rx = e.clientX - r.left
+  const ry = e.clientY - r.top
+  const dists: Record<Dir, number> = { top: ry, right: r.width - rx, bottom: r.height - ry, left: rx }
+  let dir: Dir = 'right'
+  for (const d of dirs) {
+    if (dists[d] < dists[dir]) dir = d
+  }
+  activeDir.value = dir
+}
+
+function onNodeMouseLeave() {
+  activeDir.value = null
+}
 </script>
 
 <template>
@@ -149,8 +182,24 @@ const hasSource = computed(() => type.value !== 'END')
     class="wf-node"
     :class="{ 'wf-node--pending': props.data?.pendingConnect }"
     :style="{ borderColor: meta.color, width: nodeWidth + 'px', height: nodeHeight + 'px' }"
+    @mousemove="onNodeMouseMove"
+    @mouseleave="onNodeMouseLeave"
   >
-    <Handle v-if="hasTarget" type="target" :position="Position.Left" />
+    <!-- ProcessOn 式四向连接锚点：可拖出连线，亦可作为落点接收（Loose 连接模式）；
+         TRIGGER 的锚点不可作落点，END 的锚点不可拖出。 -->
+    <template v-if="canBeSource || canBeTarget">
+      <Handle
+        v-for="d in dirs"
+        :key="'anchor-' + d"
+        :type="canBeSource ? 'source' : 'target'"
+        :id="'anchor-' + d"
+        :position="POS_MAP[d]"
+        :connectable-start="canBeSource"
+        :connectable-end="canBeTarget"
+        class="wf-anchor"
+        :class="['wf-anchor--' + d, { 'wf-anchor--active': activeDir === d }]"
+      />
+    </template>
     <div class="wf-node-head" :style="{ background: meta.color }">
       <span class="wf-node-type">{{ meta.label }}</span>
       <span class="wf-node-live" />
@@ -160,7 +209,6 @@ const hasSource = computed(() => type.value !== 'END')
       <div v-for="line in shownLines" :key="line" class="wf-node-summary-line">{{ line }}</div>
       <div v-if="moreCount" class="wf-node-summary-more">+{{ moreCount }} 分支…</div>
     </div>
-    <Handle v-if="hasSource" type="source" :position="Position.Right" />
   </div>
 </template>
 
@@ -177,6 +225,33 @@ const hasSource = computed(() => type.value !== 'END')
   outline: 2px dashed #409eff;
   outline-offset: 3px;
   box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.12);
+}
+/* ProcessOn 式连接锚点：悬停节点时显现，最近方向高亮；上层的 source 锚点可拖出连线 */
+:deep(.wf-anchor) {
+  width: 10px;
+  height: 10px;
+  min-width: 10px;
+  min-height: 10px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #409eff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  opacity: 0;
+  transition:
+    opacity 0.12s ease,
+    transform 0.12s ease,
+    background-color 0.12s ease;
+  z-index: 4;
+  cursor: crosshair;
+}
+.wf-node:hover :deep(.wf-anchor) {
+  opacity: 1;
+}
+:deep(.wf-anchor--active) {
+  opacity: 1;
+  transform: scale(1.45);
+  background: #409eff;
+  border-color: #fff;
 }
 .wf-node-head {
   display: flex;

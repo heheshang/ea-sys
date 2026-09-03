@@ -10,7 +10,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { FullScreen, Aim } from '@element-plus/icons-vue'
-import { VueFlow, MarkerType, useVueFlow } from '@vue-flow/core'
+import { VueFlow, MarkerType, ConnectionMode, useVueFlow } from '@vue-flow/core'
 import type { Connection, Edge, Node } from '@vue-flow/core'
 import '@vue-flow/core/dist/style.css'
 import '@vue-flow/core/dist/theme-default.css'
@@ -1012,7 +1012,7 @@ onUnmounted(() => {
         >
           {{ p.label }}（{{ p.type }}）
         </div>
-        <div class="palette-tip">点击添加节点；连线：依次点击两个节点，或从节点右侧圆点拖出。</div>
+        <div class="palette-tip">点击添加节点；连线：鼠标悬停节点出现连接点，按住向目标节点拖出；也支持依次点击两个节点。</div>
       </div>
 
       <!-- 画布 -->
@@ -1021,6 +1021,7 @@ onUnmounted(() => {
           v-model:nodes="nodes"
           v-model:edges="edges"
           :node-types="nodeTypes"
+          :connection-mode="ConnectionMode.Loose"
           :default-viewport="{ x: 40, y: 20, zoom: 0.9 }"
           @connect="onConnect"
           @node-click="(ev) => selectNode(ev.node.id)"
@@ -1505,6 +1506,13 @@ onUnmounted(() => {
 .wf-actions {
   display: flex;
   gap: 8px;
+}
+/* 拖拽连线预览线（ProcessOn 风格：蓝色虚线） */
+:deep(.vue-flow__connection-path) {
+  stroke: #409eff;
+  stroke-width: 2;
+  stroke-dasharray: 6 3;
+  fill: none;
 }
 .connect-hint {
   padding: 6px 16px;

@@ -182,13 +182,12 @@ const wfDetail = ref<WorkflowView | null>(null)
 const executing = ref(false)
 const execResult = ref<DryRunResponse | null>(null)
 
-const snapReady = computed(() => triggerAudience.value?.latestSnapshot?.status === 'ready')
 function wfHasAudienceNode(): boolean {
   return wfDetail.value?.nodes.some((n) => n.type === 'AUDIENCE') ?? false
 }
-/** 画布有 AUDIENCE 节点 → 成员由节点圈选（快照可缺省）；否则必须已有本人群快照。 */
+/** 批量成员来源唯一 = 画布 AUDIENCE 人群节点；选择流程后即可发起。 */
 const canTrigger = computed(
-  () => selectedWfId.value != null && wfDetail.value != null && (wfHasAudienceNode() || snapReady.value) && !executing.value,
+  () => selectedWfId.value != null && wfDetail.value != null && !executing.value,
 )
 /** 真实触达人数：通道级下发记录去重联系人（nodes[].contacts 为节点处理数，非触达）。 */
 const deliveredContacts = computed(
@@ -225,10 +224,7 @@ async function doTrigger() {
   if (selectedWfId.value == null || !triggerAudience.value) return
   executing.value = true
   try {
-    const req = wfHasAudienceNode()
-      ? {}
-      : { audienceSnapshotId: triggerAudience.value.latestSnapshot!.id }
-    execResult.value = await executeWorkflow(selectedWfId.value, req)
+    execResult.value = await executeWorkflow(selectedWfId.value)
     if (execResult.value.error) {
       ElMessage.error(`执行未完成：${execResult.value.error}`)
     } else {
@@ -236,7 +232,7 @@ async function doTrigger() {
     }
   } catch {
     execResult.value = null
-    ElMessage.error('执行失败：请确认流程已发布、人群快照有效')
+    ElMessage.error('执行失败：请确认流程已发布、画布含「人群」节点')
   } finally {
     executing.value = false
   }
@@ -414,10 +410,7 @@ function snapStatusType(s: string) {
         <el-form-item label="触达人群">
           <div>
             <b>{{ triggerAudience?.name }}</b>
-            <el-tag v-if="snapReady" type="success" size="small" class="snap-count">
-              最新快照 {{ triggerAudience?.latestSnapshot?.memberCount }} 人
-            </el-tag>
-            <span v-else class="muted">（未圈选，需先「圈选快照」）</span>
+            <span class="muted">（批量成员以画布「人群」节点圈选为准）</span>
           </div>
         </el-form-item>
         <el-form-item label="执行流程">
@@ -440,21 +433,14 @@ function snapStatusType(s: string) {
             type="info"
             :closable="false"
             show-icon
-            title="画布含「人群」节点：执行时按节点圈选成员，此处人群不参与圈选。"
-          />
-          <el-alert
-            v-else-if="snapReady"
-            type="success"
-            :closable="false"
-            show-icon
-            title="画布无「人群」节点：按当前人群最新快照执行。"
+            title="画布含「人群」节点：执行时按节点圈选成员。"
           />
           <el-alert
             v-else
             type="warning"
             :closable="false"
             show-icon
-            title="该流程无「人群」节点，需先圈选快照后才能发起。"
+            title="画布无「人群」节点，无法执行：请先在画布添加「人群」节点圈选批量成员。"
           />
         </el-form-item>
         <el-form-item v-if="execResult" label="执行结果">

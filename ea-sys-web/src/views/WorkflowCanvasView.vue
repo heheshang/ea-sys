@@ -30,11 +30,10 @@ import {
   validateWorkflow,
 } from '../api/workflow'
 import { listTemplates } from '../api/template'
-import { listAudiences, listSnapshots } from '../api/audience'
+import { listAudiences } from '../api/audience'
 import type {
   AiGenerateResponse,
   Audience,
-  AudienceSnapshot,
   ConditionRule,
   DryRunResponse,
   PlanValidationView,
@@ -97,9 +96,7 @@ const validating = ref(false)
 const publishing = ref(false)
 
 const templates = ref<Template[]>([])
-const snapshots = ref<AudienceSnapshot[]>([])
 const audiences = ref<Audience[]>([])
-const dryRunAudienceId = ref<number | null>(null)
 const reportVisible = ref(false)
 
 /* 节点面板（后端 WORKFLOW 节点类型；AGENT_SPLIT 按发布策略分层分流） */
@@ -145,9 +142,6 @@ const selectedNode = computed(() =>
 const selectedEdge = computed(() =>
   selectedKind.value === 'edge' ? liteEdges.value.find((e) => e.id === selectedId.value) : undefined,
 )
-/** 画布是否含 AUDIENCE 人群节点（批量成员来源；有此节点时 TRIGGER 无需配置人群）。 */
-const hasAudienceNode = computed(() => allNodes().some((n) => nodeTypeOf(n) === 'AUDIENCE'))
-
 const NODE_KEY_COUNTERS: Record<WorkflowNodeType, number> = {
   TRIGGER: 0, AUDIENCE: 0, CONDITION: 0, AGENT_SPLIT: 0, DELAY: 0, ACTION: 0, UPDATE: 0, END: 0,
 }
@@ -427,14 +421,6 @@ async function loadAudiences() {
   audiences.value = page.records
 }
 
-async function selectAudience(id: number) {
-  snapshots.value = []
-  if (!id) return
-  const page = await listSnapshots(id, 1, 100)
-  // 干跑需要 ready 快照
-  snapshots.value = page.records.filter((s) => s.status === 'ready')
-}
-
 /* ---------- 加载 / 保存 ---------- */
 
 async function load() {
@@ -584,27 +570,12 @@ async function publish() {
 
 /* ---------- 干跑 ---------- */
 
-const dryRunDialog = ref(false)
-const dryRunSnapshotId = ref<number | null>(null)
 const report = ref<DryRunResponse | null>(null)
 
-async function openDryRun() {
-  if (!workflowId.value) return
-  await loadAudiences()
-  dryRunAudienceId.value = null
-  dryRunSnapshotId.value = null
-  snapshots.value = []
-  dryRunDialog.value = true
-}
-
 async function runDryRun() {
-  if (!dryRunSnapshotId.value) {
-    ElMessage.warning('请选择人群快照')
-    return
-  }
+  if (!workflowId.value) return
   try {
-    report.value = await dryRunWorkflow(workflowId.value!, { audienceSnapshotId: dryRunSnapshotId.value })
-    dryRunDialog.value = false
+    report.value = await dryRunWorkflow(workflowId.value)
     reportVisible.value = true
   } catch (e) {
     ElMessage.error((e as Error).message || '干跑失败')
@@ -1049,7 +1020,7 @@ onUnmounted(() => {
         <el-button type="success" :loading="publishing" :disabled="status !== 'draft'" @click="publish">
           发布
         </el-button>
-        <el-button type="warning" :disabled="status !== 'published'" @click="openDryRun">干跑</el-button>
+        <el-button type="warning" :disabled="status !== 'published'" @click="runDryRun">干跑</el-button>
         <el-button type="primary" plain @click="openAiDialog">AI 创建</el-button>
         <el-button type="primary" plain @click="openPlanImport">导入计划校验</el-button>
         <el-button @click="openPlanReport">校验报告</el-button>
@@ -1228,17 +1199,7 @@ onUnmounted(() => {
               </el-form-item>
 
               <template v-if="nodeConfig(selectedNode).triggerType === 'SCHEDULED'">
-                <el-form-item v-if="!hasAudienceNode" label="人群">
-                  <el-select
-                    :model-value="selectedNode ? nodeConfig(selectedNode).audienceId : ''"
-                    placeholder="选择圈选人群"
-                    style="width: 100%"
-                    @update:model-value="(v: number) => updateNodeConfig('audienceId', v)"
-                  >
-                    <el-option v-for="a in audiences" :key="a.id" :label="a.name" :value="a.id" />
-                  </el-select>
-                </el-form-item>
-                <div v-else class="config-hint">批量成员由画布「人群」节点圈选，此处无需重复配置。</div>
+                <div class="config-hint">批量成员由画布「人群」节点圈选，无需在此配置人群。</div>
                 <el-form-item label="cron">
                   <el-input
                     :model-value="selectedNode ? (nodeConfig(selectedNode).cron as string ?? '') : ''"
@@ -1256,12 +1217,9 @@ onUnmounted(() => {
               </template>
 
               <template v-else-if="nodeConfig(selectedNode).triggerType === 'IMMEDIATE'">
-                <div v-if="hasAudienceNode" class="config-hint">
-                  发布成功后立即对画布「人群」节点圈选的成员执行一次，无需在此选择人群。
+                <div class="config-hint">
+                  发布成功后立即对画布「人群」节点圈选的成员执行一次（画布未放置「人群」节点时保存将被拒绝）。
                 </div>
-                <el-alert v-else type="warning" :closable="false" show-icon>
-                  画布尚未放置「人群」节点：立即触发需要批量成员来源，未配置时保存将被拒绝。请从左侧拖入「人群」节点并圈选。
-                </el-alert>
               </template>
 
               <template v-else-if="nodeConfig(selectedNode).triggerType === 'EVENT'">
@@ -1405,31 +1363,6 @@ onUnmounted(() => {
           发送
         </el-button>
       </div>
-    </el-dialog>
-
-    <!-- 干跑快照选择 -->
-    <el-dialog v-model="dryRunDialog" title="选择人群快照（干跑）" width="420px">
-      <el-form label-width="90px">
-        <el-form-item label="人群">
-          <el-select v-model="dryRunAudienceId" placeholder="选择人群" style="width: 100%" @update:model-value="(v: number) => selectAudience(v)">
-            <el-option v-for="a in audiences" :key="a.id" :label="a.name" :value="a.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="快照">
-          <el-select v-model="dryRunSnapshotId" placeholder="选择 ready 快照" style="width: 100%">
-            <el-option
-              v-for="s in snapshots"
-              :key="s.id"
-              :label="`快照 #${s.id}（${s.memberCount} 人 · ${s.executedAt}）`"
-              :value="s.id"
-            />
-          </el-select>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="dryRunDialog = false">取消</el-button>
-        <el-button type="primary" @click="runDryRun">开始干跑</el-button>
-      </template>
     </el-dialog>
 
     <!-- 干跑报告抽屉 -->

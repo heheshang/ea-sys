@@ -2,7 +2,6 @@ import { http } from './http'
 import type {
   AiChatRequest,
   ApiResponse,
-  DryRunRequest,
   DryRunResponse,
   ExecutionSummary,
   PlanValidationView,
@@ -106,15 +105,15 @@ export async function publishWorkflow(id: number): Promise<WorkflowView> {
   return data.data
 }
 
-/** POST /api/workflows/{id}/dry-run —— 干跑：对已发布版本 + 快照成员模拟执行。 */
-export async function dryRunWorkflow(id: number, req: DryRunRequest): Promise<DryRunResponse> {
-  const { data } = await http.post<ApiResponse<DryRunResponse>>(`/workflows/${id}/dry-run`, req)
+/** POST /api/workflows/{id}/dry-run —— 干跑：对已发布版本模拟执行（批量成员由画布 AUDIENCE 人群节点圈选）。 */
+export async function dryRunWorkflow(id: number): Promise<DryRunResponse> {
+  const { data } = await http.post<ApiResponse<DryRunResponse>>(`/workflows/${id}/dry-run`)
   return data.data
 }
 
-/** POST /api/workflows/{id}/execute —— 真实触达执行。 */
-export async function executeWorkflow(id: number, req: DryRunRequest): Promise<DryRunResponse> {
-  const { data } = await http.post<ApiResponse<DryRunResponse>>(`/workflows/${id}/execute`, req)
+/** POST /api/workflows/{id}/execute —— 真实触达执行（批量成员由画布 AUDIENCE 人群节点圈选）。 */
+export async function executeWorkflow(id: number): Promise<DryRunResponse> {
+  const { data } = await http.post<ApiResponse<DryRunResponse>>(`/workflows/${id}/execute`)
   return data.data
 }
 

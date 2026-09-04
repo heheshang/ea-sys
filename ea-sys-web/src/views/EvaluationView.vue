@@ -1,29 +1,36 @@
 <script setup lang="ts">
 /**
  * 评测中心（M8）：数据集管理 + jsonl 导入/预览 + 用例管理 + 三组评测器面板（规则/LLM-Judge/自定义，
- * 每组全选/清空）+ 批量运行（openjudge/execute，LLM 判分次数）+ 报告回看（TraceID 联动驾驶舱）。
- * execute 模式真实运行被测智能体（assistant / workflow-dialogue）并做执行维度评测。
- * 数据：GET/POST/PUT/DELETE /api/evaluations/{datasets,cases,import,custom-evaluators,run,reports}。
+ * 每组全选/清空）+ 异步任务运行（POST /tasks 202 立即返回 → ~3s 轮询进度，状态徽章/进度条，
+ * COMPLETED 自动并入结果区，FAILED 错误横幅）+ 运行任务列表（状态徽章/进度/查看结果/取消）+
+ * 逐样本判分抽屉（score 百分比 + ✓/✗ + LLM reason）+ 报告基线回归对比（红绿 delta）+ 报告回看
+ * （TraceID 联动驾驶舱）。execute 模式真实运行被测智能体（assistant / workflow-dialogue）。
+ * 数据：GET/POST/PUT/DELETE /api/evaluations/{datasets,cases,import,custom-evaluators,tasks,reports}。
  */
-import { computed, reactive, ref } from 'vue'
+import { computed, onUnmounted, reactive, ref } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   EVALUATOR_CATALOG,
   addCase,
+  cancelTask,
+  compareReport,
   createCustomEvaluator,
   createDataset,
+  createTask,
   deleteCase,
   deleteCustomEvaluator,
   deleteDataset,
   deleteReport,
+  getReport,
+  getTask,
   importCases,
   listCases,
   listCustomEvaluators,
   listDatasets,
   listReports,
-  runEvaluation,
+  listTasks,
   updateCase,
   updateCustomEvaluator,
   updateDataset,
@@ -36,7 +43,9 @@ import type {
   DatasetSaveRequest,
   DatasetView,
   ImportResultView,
+  ReportCompareView,
   ReportView,
+  TaskView,
 } from '../api/types'
 
 const router = useRouter()
@@ -50,11 +59,21 @@ const { data: reports, isLoading: reportsLoading, refetch: refetchReports } = us
   queryKey: ['eval-reports'],
   queryFn: listReports,
 })
+const { data: tasks, isLoading: tasksLoading, refetch: refetchTasks } = useQuery<TaskView[]>({
+  queryKey: ['eval-tasks'],
+  queryFn: listTasks,
+  // 存在未终态任务时每 3s 自动刷新任务列表，全部终态后停止轮询
+  refetchInterval: (query) => {
+    const rows = query.state.data as TaskView[] | undefined
+    return rows && rows.some((t) => t.status === 'PENDING' || t.status === 'RUNNING') ? 3000 : false
+  },
+})
 
 async function refreshAll() {
   try {
     await refetchDatasets()
     await refetchReports()
+    await refetchTasks()
   } catch {
     ElMessage.error('刷新失败')
   }
@@ -137,6 +156,7 @@ async function removeDataset(row: DatasetView) {
 async function refetchAllQueries() {
   await refetchDatasets()
   await refetchReports()
+  await refetchTasks()
 }
 
 /* ---------- 数据集状态开关 ---------- */
@@ -278,39 +298,215 @@ async function removeCase(c: CaseView) {
   }
 }
 
-/* ---------- 评测运行 ---------- */
+/* ---------- 评测运行（异步任务流） ---------- */
 const runDatasetId = ref<number | undefined>(undefined)
 const runEvaluators = ref<string[]>(EVALUATOR_CATALOG.map((e) => e.metric))
 /** LLM 判分次数（多次取均值；1-5，缺省 1） */
 const runJudgeRounds = ref(1)
 const running = ref(false)
 const lastReport = ref<ReportView | null>(null)
+/** 当前运行/展示中的任务（运行区状态徽章 + 进度条） */
+const activeTask = ref<TaskView | null>(null)
+/** 任务失败错误横幅文案（FAILED 后 errorMessage） */
+const taskError = ref<string | null>(null)
+/** 任务轮询定时器（约 3s 一次；卸载/终态清理） */
+let taskPollTimer: number | null = null
+
+function stopTaskPolling() {
+  if (taskPollTimer != null) {
+    window.clearInterval(taskPollTimer)
+    taskPollTimer = null
+  }
+}
+onUnmounted(stopTaskPolling)
 
 const runnableDatasets = computed(() =>
   (datasets.value ?? []).filter((d) => d.status === 'ENABLED' && d.caseCount > 0),
 )
+
+const taskStatusType: Record<TaskView['status'], 'info' | 'warning' | 'success' | 'danger'> = {
+  PENDING: 'info',
+  RUNNING: 'warning',
+  COMPLETED: 'success',
+  FAILED: 'danger',
+  CANCELED: 'info',
+}
+const taskStatusLabel: Record<TaskView['status'], string> = {
+  PENDING: '排队中',
+  RUNNING: '运行中',
+  COMPLETED: '已完成',
+  FAILED: '失败',
+  CANCELED: '已取消',
+}
+const isTaskActive = (t: TaskView | null | undefined): boolean =>
+  !!t && (t.status === 'PENDING' || t.status === 'RUNNING')
+const progressStatus = (s: TaskView['status'] | undefined): 'success' | 'exception' | undefined => {
+  if (s === 'COMPLETED') return 'success'
+  if (s === 'FAILED') return 'exception'
+  return undefined
+}
+
+/** 运行任务表格 slot row 为 any，经字符串入参安全映射状态样式/文案 */
+const taskTypeFor = (s: string): 'info' | 'warning' | 'success' | 'danger' =>
+  taskStatusType[s as TaskView['status']] ?? 'info'
+const taskLabelFor = (s: string): string => taskStatusLabel[s as TaskView['status']] ?? s
+
+/** 数据集 id → 名称（运行任务列表列；row.datasetId 为 any，函数入参收窄） */
+const datasetNameMap = computed(() => {
+  const m: Record<number, string> = {}
+  for (const d of datasets.value ?? []) m[d.id] = d.name
+  return m
+})
+const datasetNameOf = (datasetId: number): string => datasetNameMap.value[datasetId] ?? `#${datasetId}`
+
+async function pollTask(taskId: number) {
+  let t: TaskView
+  try {
+    t = await getTask(taskId)
+  } catch {
+    return // 单次轮询失败不中断，等下一轮
+  }
+  activeTask.value = t
+  if (t.status === 'COMPLETED') {
+    stopTaskPolling()
+    running.value = false
+    if (t.reportId != null) {
+      try {
+        lastReport.value = await getReport(t.reportId)
+        ElMessage.success('评测完成，报告已生成')
+      } catch {
+        ElMessage.error('报告加载失败')
+      }
+    }
+    await refetchTasks()
+    await refetchReports()
+  } else if (t.status === 'FAILED') {
+    stopTaskPolling()
+    running.value = false
+    taskError.value = t.errorMessage
+    ElMessage.error(t.errorMessage || '评测任务失败')
+    await refetchTasks()
+  } else if (t.status === 'CANCELED') {
+    stopTaskPolling()
+    running.value = false
+    ElMessage.info('评测任务已取消')
+    await refetchTasks()
+  }
+}
 
 async function doRun() {
   if (runDatasetId.value == null) {
     ElMessage.warning('请选择数据集')
     return
   }
+  if (running.value) return
   running.value = true
+  taskError.value = null
+  activeTask.value = null
   lastReport.value = null
-  ElMessage.info('评测运行中，约需 1-3 分钟，请耐心等待')
   try {
-    lastReport.value = await runEvaluation({
+    const t = await createTask({
       datasetId: runDatasetId.value,
       evaluators: runEvaluators.value,
       judgeRounds: runJudgeRounds.value,
-    }, { timeout: 0 })
-    ElMessage.success('评测完成，报告已生成')
-    await refetchReports()
+    })
+    activeTask.value = t
+    ElMessage.success('评测任务已创建，正在异步执行')
+    await refetchTasks()
+    taskPollTimer = window.setInterval(() => { void pollTask(t.id) }, 3000)
+    void pollTask(t.id)
   } catch {
-    ElMessage.error('评测运行失败')
-  } finally {
     running.value = false
+    ElMessage.error('创建评测任务失败')
   }
+}
+
+/* ---------- 运行任务列表：取消 / 查看结果 ---------- */
+async function cancelTaskFromList(t: TaskView) {
+  try {
+    await ElMessageBox.confirm(`确认取消评测任务「${t.name}」（#${t.id}）？`, '取消确认', { type: 'warning' })
+  } catch {
+    return
+  }
+  try {
+    await cancelTask(t.id)
+    ElMessage.success('已发起取消')
+    await refetchTasks()
+    // 正在轮询的任务：立即拉一次确认状态
+    if (t.id === activeTask.value?.id) void pollTask(t.id)
+  } catch (e) {
+    ElMessage.error((e as Error).message || '取消失败')
+  }
+}
+
+async function viewTaskResult(t: TaskView) {
+  if (t.reportId == null) {
+    ElMessage.warning('该任务无关联报告')
+    return
+  }
+  try {
+    const r = await getReport(t.reportId)
+    if (t.id === activeTask.value?.id) {
+      // 当前运行区任务：直接并入结果区
+      lastReport.value = r
+    } else {
+      openReportDetail(r)
+    }
+  } catch {
+    ElMessage.error('报告加载失败')
+  }
+}
+
+/* ---------- 逐样本判分抽屉 ---------- */
+const sampleDrawerVisible = ref(false)
+const sampleTask = ref<TaskView | null>(null)
+
+function openSamples(t: TaskView) {
+  sampleTask.value = t
+  sampleDrawerVisible.value = true
+}
+
+/* ---------- 基线回归对比 ---------- */
+const compareDialogVisible = ref(false)
+const compareTarget = ref<ReportView | null>(null)
+const compareBaselineId = ref<number | null>(null)
+const compareLoading = ref(false)
+const compareResult = ref<ReportCompareView | null>(null)
+
+/** 同数据集历史报告（排除自身，最新在前；缺省建议最近一次） */
+const baselineCandidates = computed(() => {
+  const target = compareTarget.value
+  if (!target) return []
+  return (reports.value ?? [])
+    .filter((r) => r.datasetId === target.datasetId && r.id !== target.id)
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+})
+
+function openCompare(row: ReportView) {
+  compareTarget.value = row
+  compareBaselineId.value = baselineCandidates.value[0]?.id ?? null
+  compareResult.value = null
+  compareDialogVisible.value = true
+}
+
+async function doCompare() {
+  if (compareTarget.value == null || compareBaselineId.value == null) return
+  compareLoading.value = true
+  try {
+    compareResult.value = await compareReport(compareTarget.value.id, compareBaselineId.value)
+  } catch (e) {
+    ElMessage.error((e as Error).message || '对比失败')
+  } finally {
+    compareLoading.value = false
+  }
+}
+
+const fmtPct = (v: number | null | undefined): string =>
+  v == null ? '-' : `${(v * 100).toFixed(1)}%`
+const fmtDelta = (v: number | null | undefined): string => {
+  if (v == null) return '-'
+  const pct = v * 100
+  return `${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`
 }
 
 /* ---------- 三组评测器面板：全选 / 清空 ---------- */
@@ -765,6 +961,29 @@ const jsonText = (v: unknown): string => (v === undefined || v === null ? '-' : 
         <el-button type="primary" :loading="running" @click="doRun">运行评测</el-button>
       </div>
 
+      <!-- 运行状态：状态徽章 + 进度条 + 失败/取消提示；COMPLETED 后报告自动并入下方结果区 -->
+      <template v-if="activeTask || taskError">
+        <div class="run-status">
+          <div class="result-head">
+            <el-tag :type="taskStatusType[activeTask?.status ?? 'FAILED']" size="small">
+              {{ taskStatusLabel[activeTask?.status ?? 'FAILED'] }}
+            </el-tag>
+            <span class="result-title">{{ activeTask ? `任务 #${activeTask.id} ${activeTask.name}` : '评测任务' }}</span>
+            <span v-if="activeTask" class="panel-sub">已测 {{ activeTask.testedCases }}/{{ activeTask.totalCases }} 例 · 创建 {{ fmtTime(activeTask.createdAt) }}</span>
+            <el-button v-if="activeTask && isTaskActive(activeTask)" size="small" type="danger" plain @click="cancelTaskFromList(activeTask)">取消任务</el-button>
+          </div>
+          <el-progress
+            v-if="activeTask"
+            :percentage="activeTask.progressPct"
+            :status="progressStatus(activeTask.status)"
+            :stroke-width="12"
+            class="run-progress"
+          />
+          <el-alert v-if="taskError" :title="taskError || '评测任务失败'" type="error" :closable="false" show-icon class="task-error" />
+          <el-alert v-if="activeTask?.status === 'CANCELED'" title="评测任务已取消" type="info" :closable="false" class="task-error" />
+        </div>
+      </template>
+
       <template v-if="lastReport">
         <div class="result-head">
           <el-tag :type="verdictType(lastReport.summary.verdict)" size="small">总分 {{ lastReport.summary.score }}</el-tag>
@@ -799,10 +1018,56 @@ const jsonText = (v: unknown): string => (v === undefined || v === null ? '-' : 
           </div>
         </div>
       </template>
-      <el-empty v-else description="尚未运行评测" :image-size="60" />
+      <el-empty v-else-if="!activeTask && !taskError" description="尚未运行评测" :image-size="60" />
     </el-card>
 
-    <!-- ④ 报告列表 -->
+    <!-- ④ 运行任务列表 -->
+    <el-card shadow="never" class="panel">
+      <template #header>
+        <div class="panel-head">
+          <span class="panel-title">运行任务</span>
+          <span class="panel-sub">异步执行（created_at 倒序）；存在未终态任务时自动刷新</span>
+        </div>
+      </template>
+      <el-table v-loading="tasksLoading" :data="tasks ?? []" border stripe size="small">
+        <el-table-column prop="id" label="ID" width="70" />
+        <el-table-column prop="name" label="任务名称" min-width="140" show-overflow-tooltip />
+        <el-table-column label="数据集" min-width="120" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ datasetNameOf(row.datasetId) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="90">
+          <template #default="{ row }">
+            <el-tooltip v-if="row.errorMessage" :content="row.errorMessage" placement="top">
+              <el-tag :type="taskTypeFor(row.status)" size="small">{{ taskLabelFor(row.status) }}</el-tag>
+            </el-tooltip>
+            <el-tag v-else :type="taskTypeFor(row.status)" size="small">{{ taskLabelFor(row.status) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="进度" width="230">
+          <template #default="{ row }">
+            <el-progress :percentage="row.progressPct" :status="progressStatus(row.status)" :stroke-width="10" />
+            <span class="task-progress-text">已测 {{ row.testedCases }}/{{ row.totalCases }} 例</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="创建时间" width="140">
+          <template #default="{ row }">{{ fmtTime(row.createdAt) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="150" fixed="right">
+          <template #default="{ row }">
+            <el-button v-if="row.status === 'COMPLETED' && row.reportId != null" size="small" link type="primary" @click="viewTaskResult(row)">查看结果</el-button>
+            <el-button v-if="row.status === 'COMPLETED'" size="small" link type="primary" @click="openSamples(row)">样本</el-button>
+            <el-button v-if="isTaskActive(row)" size="small" link type="danger" @click="cancelTaskFromList(row)">取消</el-button>
+          </template>
+        </el-table-column>
+        <template #empty>
+          <el-empty description="暂无运行任务，点上方「运行评测」发起" :image-size="80" />
+        </template>
+      </el-table>
+    </el-card>
+
+    <!-- ⑤ 报告列表 -->
     <el-card shadow="never" class="panel">
       <template #header>
         <div class="panel-head">
@@ -838,9 +1103,10 @@ const jsonText = (v: unknown): string => (v === undefined || v === null ? '-' : 
         <el-table-column label="创建时间" width="140">
           <template #default="{ row }">{{ fmtTime(row.createdAt) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="120" fixed="right">
+        <el-table-column label="操作" width="170" fixed="right">
           <template #default="{ row }">
             <el-button size="small" link type="primary" @click="openReportDetail(row)">详情</el-button>
+            <el-button size="small" link type="primary" @click="openCompare(row)">对比</el-button>
             <el-button size="small" link type="danger" @click="removeReport(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -1093,6 +1359,75 @@ const jsonText = (v: unknown): string => (v === undefined || v === null ? '-' : 
       </template>
     </el-dialog>
 
+    <!-- 基线回归对比对话框 -->
+    <el-dialog v-model="compareDialogVisible" title="基线回归对比" width="780px" :close-on-click-modal="false">
+      <template v-if="compareTarget">
+        <div class="compare-head">
+          <span class="drawer-title">当前报告：#{{ compareTarget.id }} {{ compareTarget.name }}（{{ fmtTime(compareTarget.createdAt) }}）</span>
+        </div>
+        <el-alert
+          v-if="!baselineCandidates.length"
+          type="info"
+          :closable="false"
+          show-icon
+          title="该数据集暂无其他历史报告，无法进行基线对比"
+          class="compare-tip"
+        />
+        <template v-else>
+          <div class="run-form compare-form">
+            <span class="rounds-label">基线报告</span>
+            <el-select v-model="compareBaselineId" placeholder="选择基线报告" filterable style="width: 420px">
+              <el-option
+                v-for="b in baselineCandidates"
+                :key="b.id"
+                :label="`#${b.id} ${b.name}（${fmtTime(b.createdAt)} · ${b.summary.verdict} ${b.summary.score}）`"
+                :value="b.id"
+              />
+            </el-select>
+            <el-button type="primary" :loading="compareLoading" @click="doCompare">开始对比</el-button>
+          </div>
+          <template v-if="compareResult">
+            <div class="compare-meta">
+              <span class="compare-meta-item">基线：{{ compareResult.baseline.name }}（{{ fmtTime(compareResult.baseline.createdAt) }}）</span>
+              <span class="compare-arrow">→</span>
+              <span class="compare-meta-item">当前：{{ compareResult.current.name }}（{{ fmtTime(compareResult.current.createdAt) }}）</span>
+            </div>
+            <el-table :data="compareResult.metrics" size="small" border class="mini-table">
+              <el-table-column label="评测器" width="230">
+                <template #default="{ row }"><code class="metric-code">{{ row.metric }}</code></template>
+              </el-table-column>
+              <el-table-column label="类别" width="100">
+                <template #default="{ row }">
+                  <el-tag :type="row.category === 'rule' ? 'success' : 'warning'" size="small">{{ row.category === 'rule' ? '规则' : 'LLM 判分' }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="基线" width="110" align="center">
+                <template #default="{ row }">
+                  <span :class="row.baseline == null ? 'muted-text' : ''">{{ fmtPct(row.baseline) }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="当前" width="110" align="center">
+                <template #default="{ row }">
+                  <span :class="row.current == null ? 'muted-text' : ''">{{ fmtPct(row.current) }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="Delta" width="140" align="center">
+                <template #default="{ row }">
+                  <el-tag v-if="row.delta != null" :type="row.delta > 0 ? 'success' : row.delta < 0 ? 'danger' : 'info'" size="small">
+                    {{ row.delta > 0 ? '↑ 改进' : row.delta < 0 ? '↓ 回归' : '→ 持平' }} {{ fmtDelta(row.delta) }}
+                  </el-tag>
+                  <span v-else class="muted-text">-</span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </template>
+        </template>
+      </template>
+      <template #footer>
+        <el-button @click="compareDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 报告详情抽屉 -->
     <el-drawer v-model="reportDetailVisible" :title="`报告详情`" size="640px">
       <template v-if="reportDetail">
@@ -1141,6 +1476,53 @@ const jsonText = (v: unknown): string => (v === undefined || v === null ? '-' : 
           </div>
         </div>
         <el-empty v-else description="无发现（全部通过或无适用用例）" :image-size="60" />
+      </template>
+    </el-drawer>
+
+    <!-- 逐样本判分抽屉 -->
+    <el-drawer v-model="sampleDrawerVisible" title="逐样本判分" size="820px">
+      <template v-if="sampleTask">
+        <div class="drawer-head">
+          <el-tag :type="taskStatusType[sampleTask.status]" size="small">{{ taskStatusLabel[sampleTask.status] }}</el-tag>
+          <span class="drawer-title">{{ sampleTask.name }} · 已测 {{ sampleTask.testedCases }}/{{ sampleTask.totalCases }} 例</span>
+        </div>
+        <div v-if="sampleTask.sampleResults && sampleTask.sampleResults.length" class="sample-list">
+          <div v-for="s in sampleTask.sampleResults" :key="s.seq" class="sample-block">
+            <div class="sample-head">
+              <el-tag size="small" type="info">#{{ s.seq }}</el-tag>
+              <span class="case-question">{{ s.question }}</span>
+              <el-tag :type="s.mode === 'execute' ? 'warning' : 'success'" size="small">{{ s.mode }}</el-tag>
+            </div>
+            <div class="case-meta">回复：{{ s.actualResponse || '（空，不适用）' }}</div>
+            <el-table :data="s.metrics" size="small" border class="mini-table">
+              <el-table-column label="评测器" width="230">
+                <template #default="{ row }"><code class="metric-code">{{ row.metric }}</code></template>
+              </el-table-column>
+              <el-table-column label="类别" width="100">
+                <template #default="{ row }">
+                  <el-tag :type="row.category === 'rule' ? 'success' : 'warning'" size="small">{{ row.category === 'rule' ? '规则' : 'LLM 判分' }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="得分" width="150">
+                <template #default="{ row }">
+                  <el-progress :percentage="Math.round(row.score * 100)" :stroke-width="10" />
+                </template>
+              </el-table-column>
+              <el-table-column label="通过" width="80" align="center">
+                <template #default="{ row }">
+                  <span :class="row.passed ? 'pass-mark' : 'fail-mark'">{{ row.passed ? '✓' : '✗' }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="理由" min-width="200">
+                <template #default="{ row }">
+                  <span v-if="row.reason" class="reason-text">{{ row.reason }}</span>
+                  <span v-else class="muted-text">-</span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </div>
+        <el-empty v-else description="该任务暂无样本明细" :image-size="60" />
       </template>
     </el-drawer>
   </div>
@@ -1350,6 +1732,82 @@ const jsonText = (v: unknown): string => (v === undefined || v === null ? '-' : 
 .form-hint {
   margin-left: 10px;
   font-size: 12px;
+  color: #909399;
+}
+.run-status {
+  margin-bottom: 14px;
+}
+.run-progress {
+  margin: 6px 0;
+}
+.task-error {
+  margin-top: 8px;
+}
+.task-progress-text {
+  color: #909399;
+  font-size: 12px;
+  margin-left: 8px;
+}
+.compare-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.compare-tip {
+  margin: 10px 0 0;
+}
+.compare-form {
+  margin: 12px 0;
+}
+.compare-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: #303133;
+}
+.compare-meta-item {
+  background: #f5f7fa;
+  border-radius: 4px;
+  padding: 6px 10px;
+}
+.compare-arrow {
+  color: #909399;
+}
+.sample-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.sample-block {
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.sample-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.pass-mark {
+  color: #67c23a;
+  font-weight: 600;
+}
+.fail-mark {
+  color: #f56c6c;
+  font-weight: 600;
+}
+.reason-text {
+  color: #606266;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.muted-text {
   color: #909399;
 }
 </style>

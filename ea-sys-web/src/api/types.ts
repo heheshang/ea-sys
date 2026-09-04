@@ -781,3 +781,55 @@ export interface ImportResultView {
   /** 坏行明细（行号从 1 计：整体 JSON 数组时 = 元素下标+1） */
   errors: Array<{ line: number; message: string }>
 }
+
+/** 评测任务（POST/GET /api/evaluations/tasks；异步执行，逐样本进度上报）。 */
+export interface TaskView {
+  id: number
+  name: string
+  datasetId: number
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELED'
+  totalCases: number
+  testedCases: number
+  progressPct: number
+  errorMessage: string | null
+  reportId: number | null
+  /** 逐样本判分明细（COMPLETED 后非空；列表接口可能为 null） */
+  sampleResults: SampleResult[] | null
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** 任务逐样本判分结果（TaskView.sampleResults[]）。 */
+export interface SampleResult {
+  seq: number
+  question: string
+  actualResponse: string
+  mode: 'openjudge' | 'execute'
+  metrics: SampleMetricResult[]
+}
+
+/** 单样本单指标判分（score 0-1；llm_judge 类含 reason）。 */
+export interface SampleMetricResult {
+  metric: string
+  category: 'rule' | 'llm_judge'
+  score: number
+  passed: boolean
+  reason: string | null
+}
+
+/** 报告基线回归对比行（ReportCompareView.metrics[]）。 */
+export interface ReportCompareMetric {
+  metric: string
+  category: 'rule' | 'llm_judge'
+  current: number | null
+  baseline: number | null
+  delta: number | null
+}
+
+/** 报告基线回归对比（GET /api/evaluations/reports/{id}/compare?baseline={reportId}）。 */
+export interface ReportCompareView {
+  baseline: { id: number; name: string; createdAt: string }
+  current: { id: number; name: string; createdAt: string }
+  metrics: ReportCompareMetric[]
+}

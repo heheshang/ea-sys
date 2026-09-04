@@ -5,10 +5,18 @@ import com.easysys.api.dto.evaluation.CustomEvaluatorView;
 import com.easysys.api.dto.evaluation.DatasetView;
 import com.easysys.api.dto.evaluation.EvaluationRunRequest;
 import com.easysys.api.dto.evaluation.ImportResultView;
+import com.easysys.api.dto.evaluation.MetricCatalogView;
+import com.easysys.api.dto.evaluation.ReportCompareView;
 import com.easysys.api.dto.evaluation.ReportView;
+import com.easysys.api.dto.evaluation.TaskDetailView;
+import com.easysys.api.dto.evaluation.TaskView;
 import com.easysys.api.service.EvaluationService;
 import com.easysys.common.web.ApiResponse;
+import com.easysys.common.web.BizException;
+import com.easysys.common.web.ErrorCode;
 import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -17,12 +25,14 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 
 /**
- * 评测中心：数据集 + 用例管理，批量运行（AgentPolicy 确定性评测模型 + 审计），报告回看。
+ * 评测中心：数据集 + 用例管理，批量运行（AgentPolicy 确定性评测模型 + 审计）、
+ * 异步任务（H1 任务状态机 + 逐样本结果）、报告对比（H4）与评测目录（H6）。
  */
 @RestController
 @RequestMapping("/api/evaluations")
@@ -114,10 +124,55 @@ public class EvaluationController {
         return ApiResponse.ok(evaluationService.getReport(id));
     }
 
+    /** 报告对比：baseline 报告为基准，delta=current-baseline，metric 对齐缺项 null。 */
+    @GetMapping("/reports/{id}/compare")
+    public ApiResponse<ReportCompareView> compare(@PathVariable("id") Long currentId,
+                                                  @RequestParam(required = false) Long baseline) {
+        if (baseline == null) {
+            throw new BizException(ErrorCode.BAD_REQUEST,
+                    "缺少 baseline 报告 id（compare 需指定基线报告）");
+        }
+        return ApiResponse.ok(evaluationService.compareReports(currentId, baseline));
+    }
+
+    /** 评测目录：内置 15 指标静态元数据 + 启用的自定义评测器。 */
+    @GetMapping("/catalog")
+    public ApiResponse<List<MetricCatalogView>> catalog() {
+        return ApiResponse.ok(evaluationService.catalog());
+    }
+
     @DeleteMapping("/reports/{id}")
     public ApiResponse<Void> deleteReport(@PathVariable Long id, @RequestAttribute String username) {
         evaluationService.deleteReport(id);
         return ApiResponse.ok(null);
+    }
+
+    // ---------- 异步任务（H1） ----------
+
+    /** 创建异步评测任务：202 Accepted + PENDING 任务视图，执行线程序后台跑（状态机轮询）。 */
+    @PostMapping("/tasks")
+    public ResponseEntity<ApiResponse<TaskView>> createTask(
+            @Valid @RequestBody EvaluationRunRequest req,
+            @RequestAttribute String username) {
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .body(ApiResponse.ok(evaluationService.createTask(req, username)));
+    }
+
+    @GetMapping("/tasks")
+    public ApiResponse<List<TaskView>> tasks() {
+        return ApiResponse.ok(evaluationService.listTasks());
+    }
+
+    @GetMapping("/tasks/{id}")
+    public ApiResponse<TaskDetailView> task(@PathVariable Long id) {
+        return ApiResponse.ok(evaluationService.getTask(id));
+    }
+
+    /** 取消任务：PENDING/RUNNING 可取消，终态（COMPLETED/FAILED/CANCELED）→ 400。 */
+    @PostMapping("/tasks/{id}/cancel")
+    public ApiResponse<TaskView> cancelTask(@PathVariable Long id,
+                                            @RequestAttribute String username) {
+        return ApiResponse.ok(evaluationService.cancelTask(id, username));
     }
 
     // ---------- 自定义评测器 ----------

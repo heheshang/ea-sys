@@ -1,6 +1,8 @@
 package com.easysys.api.service;
 
 import com.easysys.api.config.AgentLlmProperties;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.SystemMessage;
@@ -17,6 +19,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -24,8 +27,8 @@ import java.util.regex.Pattern;
 
 /**
  * LLM 真实判分器：LLM 主提供方启用（easysys.agent.llm enabled + apiKey）时，对选中
- * LLM-Judge 评测器逐 case 调 Judge 模型打分（0-100），judgeRounds 次取均值；判分失败/
- * 超时/空返回 → 返回 null，由调用方降级为确定性近似（不整轮失败）。
+ * LLM-Judge 评测器逐 case 调 Judge 模型打分，judgeRounds 次取均值；判分失败/超时/空
+ * 返回 → 返回 null，由调用方降级为确定性近似（不整轮失败）。
  *
  * <p>模型位与 harness 主链路一致：经 {@link ModelRegistry#resolve} 解析 OpenAI 兼容模型
  * （openai:qwen3.7-plus → compatible-mode/v1），非流式单块响应。判分调用记账 llm_usage
@@ -39,7 +42,11 @@ public class LlmJudgeScorer {
 
     private static final Logger log = LoggerFactory.getLogger(LlmJudgeScorer.class);
     private static final Pattern SCORE = Pattern.compile("\\b\\d{1,3}\\b");
-    private static final String JUDGE_SYSTEM = "你是评测专家助手。只输出一个 0-100 的整数分数，不要任何其他内容。";
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    /** 结构化输出约束：score 0-100 + reason 理由（DeepEval 风格），解析容错降级正则。 */
+    private static final String JUDGE_SYSTEM = """
+            你是评测专家助手。请以 JSON 对象输出判分结果，不要输出任何其他内容：
+            {"score": 0-100 的整数分数, "reason": "评分依据与解读"}""";
 
     /** 内置 6 个 LLM-Judge 默认中文提示词模板。 */
     private static final Map<String, String> DEFAULT_PROMPTS = Map.of(
@@ -58,17 +65,37 @@ public class LlmJudgeScorer {
         this.llmUsageService = llmUsageService;
     }
 
+    /** 判分轮次（含 reason）。 */
+    public record JudgeRound(double score, String reason) {
+    }
+
+    /** 多轮判分结果：均值 + 各轮明细（reason 与离散度计算原料）。 */
+    public record JudgeDetail(double mean, List<JudgeRound> rounds) {
+    }
+
     /** 内置评测器默认提示词（自定义评测器用用户 judge_prompt，不经此表）。 */
     public static String defaultPrompt(String metric) {
         return DEFAULT_PROMPTS.get(metric);
     }
 
     /**
-     * 判分一轮的均值：judgeRounds 次调模型打分（0-100）取平均；任一异常/空返回不中断，
-     * 全部轮次失败返回 null（调用方降级近似）。
+     * 判分一轮的均值：judgeRounds 次调模型打分取平均；任一异常/空返回不中断，
+     * 全部轮次失败返回 null（调用方降级近似）。兼容既有调用方（同步 run 路径）。
      */
     public Double score(String metric, String promptTemplate, String question, String response,
                         String reference, int rounds, Long tenantId, String sessionId) {
+        JudgeDetail detail = judgeDetailed(metric, promptTemplate, question, response,
+                reference, rounds, tenantId, sessionId);
+        return detail == null ? null : detail.mean();
+    }
+
+    /**
+     * 结构化判分：返回均值 + 各轮 {@link JudgeRound}（score 与 reason）。LLM 未启用 /
+     * 全部轮次失败 → null。异步任务路径经此取样本级 reason 与轮次离散度。
+     */
+    public JudgeDetail judgeDetailed(String metric, String promptTemplate, String question,
+                                     String response, String reference, int rounds,
+                                     Long tenantId, String sessionId) {
         if (!llm.isEnabled() || llm.getApiKey() == null || llm.getApiKey().isBlank()) {
             return null;
         }
@@ -83,29 +110,29 @@ public class LlmJudgeScorer {
                     .apiKey(llm.getApiKey())
                     .baseUrl(llm.getBaseUrl())
                     .build());
-            double sum = 0;
-            int ok = 0;
+            List<JudgeRound> roundsList = new ArrayList<>();
             for (int i = 0; i < Math.max(rounds, 1); i++) {
-                Double s = judgeOnce(model, filled, question, response, reference, tenantId, sessionId, metric);
-                if (s != null) {
-                    sum += s;
-                    ok++;
+                JudgeRound r = judgeOnce(model, filled, question, response, reference,
+                        tenantId, sessionId, metric);
+                if (r != null) {
+                    roundsList.add(r);
                 }
             }
-            if (ok == 0) {
+            if (roundsList.isEmpty()) {
                 log.warn("LLM 判分全部轮次失败，用例降级近似 (metric={}, rounds={})", metric, rounds);
                 return null;
             }
-            return sum / ok;
+            double mean = roundsList.stream().mapToDouble(JudgeRound::score).average().orElse(0);
+            return new JudgeDetail(mean, List.copyOf(roundsList));
         } catch (Exception e) {
             log.warn("LLM 判分失败（provider 不可用/参数非法），降级近似 (metric={}): {}", metric, e.getMessage());
             return null;
         }
     }
 
-    /** 单轮判分：非流式模型调用 → 提取 0-100 数字；失败返回 null。 */
-    private Double judgeOnce(Model model, String prompt, String question, String response,
-                             String reference, Long tenantId, String sessionId, String metric) {
+    /** 单轮判分：非流式模型调用 → 解析结构化 JSON {score, reason}；失败返回 null。 */
+    private JudgeRound judgeOnce(Model model, String prompt, String question, String response,
+                                 String reference, Long tenantId, String sessionId, String metric) {
         try {
             String filled = prompt
                     .replace("{question}", question == null ? "" : question)
@@ -122,7 +149,7 @@ public class LlmJudgeScorer {
                 return null;
             }
             String text = textOf(resp.getContent());
-            Double parsed = parseScore(text);
+            JudgeRound parsed = parseJudgeResult(text);
             if (parsed == null) {
                 log.warn("LLM 判分响应不可解析（无 0-100 数字），降级本用例 (metric={}): {}", metric, snippet(text));
                 return null;
@@ -133,6 +160,65 @@ public class LlmJudgeScorer {
             log.warn("LLM 判分单轮失败，降级本用例 (metric={}): {}", metric, e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * 解析判分响应文本为 {@link JudgeRound}（包内可见供单测）：
+     * 优先 JSON 对象（容错 ```json 围栏/前后缀/夹带文字，取 score/reason），
+     * 失败降级提取第一个 0-100 数字（reason=原文摘要）；均失败返回 null。
+     */
+    static JudgeRound parseJudgeResult(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        JsonNode obj = tryJsonObject(text);
+        if (obj != null) {
+            JsonNode scoreNode = obj.path("score");
+            JsonNode reasonNode = obj.path("reason");
+            if (scoreNode.isNumber()) {
+                double v = scoreNode.asDouble();
+                if (v >= 0 && v <= 100) {
+                    return new JudgeRound(v, reasonNode.isTextual() ? reasonNode.asText() : null);
+                }
+            }
+        }
+        Double v = parseScore(text);
+        return v == null ? null : new JudgeRound(v, snippet(text));
+    }
+
+    /** 从响应文本提取 JSON 对象（直接解析 → 去掉 ``` 围栏 → 截取首尾大括号），失败返回 null。 */
+    private static JsonNode tryJsonObject(String text) {
+        String stripped = stripFence(text).trim();
+        try {
+            return MAPPER.readTree(stripped);
+        } catch (Exception ignored) {
+            // 夹带前后缀等非纯 JSON，继续兜底截取
+        }
+        int start = text.indexOf('{');
+        int end = text.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+            try {
+                return MAPPER.readTree(text.substring(start, end + 1));
+            } catch (Exception ignored) {
+                // 不构成合法 JSON，走数字正则降级
+            }
+        }
+        return null;
+    }
+
+    /** 去掉 ```json ``` 围栏（含语言标识），返回围栏内内容。 */
+    private static String stripFence(String text) {
+        int first = text.indexOf("```");
+        if (first < 0) {
+            return text;
+        }
+        int lineStart = text.indexOf('\n', first);
+        int start = lineStart < 0 ? first + 3 : lineStart + 1;
+        int last = text.lastIndexOf("```");
+        if (last > start) {
+            return text.substring(start, last);
+        }
+        return text;
     }
 
     private void recordUsage(ChatUsage usage, Long tenantId, String sessionId) {

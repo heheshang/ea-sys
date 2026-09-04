@@ -10,7 +10,9 @@ import type {
   DatasetView,
   EvaluationRunRequest,
   ImportResultView,
+  ReportCompareView,
   ReportView,
+  TaskView,
 } from './types'
 
 /** 内置评测器元数据（与 EvaluationModel ALL_METRICS 逐字对齐，代码常量内置不落表）。 */
@@ -98,6 +100,37 @@ export async function runEvaluation(
   config?: AxiosRequestConfig,
 ): Promise<ReportView> {
   const { data } = await http.post<ApiResponse<ReportView>>('/evaluations/run', req, config)
+  return data.data
+}
+
+/** POST /api/evaluations/tasks —— 创建评测任务（202 立即返回 TaskView，异步执行，前端轮询进度）。 */
+export async function createTask(req: EvaluationRunRequest): Promise<TaskView> {
+  const { data } = await http.post<ApiResponse<TaskView>>('/evaluations/tasks', req)
+  return data.data
+}
+
+/** GET /api/evaluations/tasks —— 评测任务列表（created_at DESC）。 */
+export async function listTasks(): Promise<TaskView[]> {
+  const { data } = await http.get<ApiResponse<TaskView[]>>('/evaluations/tasks')
+  return data.data
+}
+
+/** GET /api/evaluations/tasks/{id} —— 任务详情（轮询进度/终态与样本明细）。 */
+export async function getTask(id: number): Promise<TaskView> {
+  const { data } = await http.get<ApiResponse<TaskView>>(`/evaluations/tasks/${id}`)
+  return data.data
+}
+
+/** POST /api/evaluations/tasks/{id}/cancel —— 协同取消任务（已终态返回 400）。 */
+export async function cancelTask(id: number): Promise<void> {
+  await http.post<ApiResponse<null>>(`/evaluations/tasks/${id}/cancel`)
+}
+
+/** GET /api/evaluations/reports/{id}/compare?baseline={reportId} —— 报告基线回归对比（逐指标 delta）。 */
+export async function compareReport(id: number, baselineId: number): Promise<ReportCompareView> {
+  const { data } = await http.get<ApiResponse<ReportCompareView>>(`/evaluations/reports/${id}/compare`, {
+    params: { baseline: baselineId },
+  })
   return data.data
 }
 

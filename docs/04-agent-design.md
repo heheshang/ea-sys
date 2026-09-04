@@ -314,7 +314,7 @@ sequenceDiagram
 | `DELETE /api/evaluations/datasets/{id}` | 删除（级联软删用例 + 报告） |
 | `GET /api/evaluations/datasets/{id}/cases` | 用例列表（seq 升序） |
 | `POST /api/evaluations/datasets/{id}/cases` | 新增用例（seq 缺省 = max+1） |
-| `PUT /api/evaluations/datasets/{id}/cases/{caseId}` | 编辑用例 |
+| `PUT /api/evaluations/cases/{id}` | 编辑用例 |
 | `DELETE /api/evaluations/cases/{id}` | 删除用例 |
 | `POST /api/evaluations/datasets/{id}/import` | jsonl 导入：text/plain，逐行 JSON 或整体 JSON 数组；question 必填，reference→expected_output、response→provided_response、system_prompt→system_prompt；坏行跳过并返回行号明细 |
 | `GET/POST /api/evaluations/custom-evaluators` | 自定义评测器列表 / 新建（rule：rule_type ∈ keyword_contains/regex_match/length_between + params JSON；llm_judge：judgePrompt 含 {question}/{response}/{reference} 占位） |
@@ -323,6 +323,14 @@ sequenceDiagram
 | `GET /api/evaluations/reports` | 报告列表（含 judgeRounds / traceId） |
 | `GET /api/evaluations/reports/{id}` | 报告详情 |
 | `DELETE /api/evaluations/reports/{id}` | 删除报告 |
+| `POST /api/evaluations/tasks` | 异步评测任务：`{datasetId, evaluators?, judgeRounds?}`，202 Accepted + PENDING 任务视图，后台执行（状态机 PENDING→RUNNING→COMPLETED/FAILED/CANCELED） |
+| `GET /api/evaluations/tasks` | 任务列表（created_at 倒序，含 progress / sampleResults） |
+| `GET /api/evaluations/tasks/{id}` | 任务详情：任务视图 + 逐样本指标聚合（均值 / 通过数 / 适用数 / 多轮离散度 stddev+mads） |
+| `POST /api/evaluations/tasks/{id}/cancel` | 取消任务：PENDING/RUNNING 可取消（PENDING 直取消；RUNNING → CANCELING + 取消标记，检查点收敛 CANCELED 且不残留报告）；终态（COMPLETED/FAILED/CANCELED）→ 400 |
+| `GET /api/evaluations/reports/{id}/compare?baseline=` | 报告对比：delta=current-baseline（round4），metric 按名称对齐、缺项 null，direction=higher_is_better；缺 baseline → 400 |
+| `GET /api/evaluations/catalog` | 评测目录：内置 15 指标（metric/category/higherIsBetter/defaultThreshold=0.8）+ 启用的自定义评测器（custom_{id}，id 升序） |
+
+**异步任务**（V16）：`evaluation_task` 表承载状态机（PENDING / RUNNING / CANCELING / COMPLETED / FAILED / CANCELED，软删）。执行线程在 `TenantContext` 上下文内逐用例调确定性 `EvaluationModel.plan()`（与批量 `build()` 数学等价，引擎零改动），每 5 例 `markProgress` 更新 `tested_cases` 与 `progress_pct`（2 位小数）；LLM-Judge 判分 `injectJudgeScores` 逐用例注入，`sample_results` JSONB 以 `{seq, question, actual_response, mode, metrics[{metric, category, score, passed, reason?, round_scores?}]}` 落库（reason 取首个非空判分理由截 500，round_scores 为多轮判分分数四舍五入整数数组，离散度 stddev/mads 供详情聚合）；task 与 report 共享 traceId（params 快照读取），终态写入 Report 且任务 `report_id` 回填，报告结构与同步 run 完全一致。取消竞态由 SQL 状态前置裁决（`WHERE status='RUNNING'` 等），不会双写报告；FAILED 仅任务级（数据集停用 / 无可评测用例 / 未知 mode / 异常），失败样本语义不变。任务审计：create → `EVALUATION_TASK_CREATE`、cancel → `EVALUATION_TASK_CANCEL`，run 审计仍只写一次 `evaluation_run`（SUCCESS/rule）且为最后一条。
 
 **评测目录（与 `EvaluationModel` 常量逐字对齐）**：规则 `number_accuracy` / `string_exact` / `response_repetition` / `text_similarity` / `observation_information_gain` / `tool_call_accuracy` / `task_success` / `step_efficiency` / `policy_compliance`；LLM-Judge `llm_correctness` / `llm_instruction_following` / `llm_relevance` / `llm_hallucination` / `llm_reasoning_groundedness` / `llm_response_completeness`。四个执行维度评测器参考通用 agent 评测指标：工具调用正确性（期望工具名精确命中 0.5 / 参数全匹配 1.0，有轨迹但未调用 0）、端到端任务成功（期望数字全集命中或文本 bigram 相似度 ≥0.8）、步骤效率（min(1, 期望步数/实际步数)）、策略合规（`expected_policy=[{keyword,prohibit}]` 必备/禁区词，任一违规 0）。模型入参不在白名单（内置 `ALL_METRICS` 或本次运行已启用的自定义 `custom_{id}`）的 metric 静默丢弃，前端目录必须与之对齐。
 

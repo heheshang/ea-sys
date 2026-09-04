@@ -21,6 +21,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 /**
  * 批处理五路（LAYER/CHURN/WORKFLOW/COCKPIT/EVALUATION）统一 HarnessAgent bean 装配：
  * 执行面由框架承载（模型位、会话隔离、无状态一次性调用），合规闸门（schema 硬校验 +
@@ -82,6 +85,16 @@ public class HarnessAgentConfig {
         EvaluationModel planner = new EvaluationModel();
         return batchAgent("evaluation", "评测中心报告生成（EVALUATION 批处理）",
                 sysPrompt(AgentType.EVALUATION), planner, llm, agentscopeDistributedStore, llmUsageMiddleware);
+    }
+
+    /** 评测任务异步执行线程池（H1）：任务级隔离，异常不穿透调用方；destroy 时优雅关闭。 */
+    @Bean(name = "evaluationTaskExecutor", destroyMethod = "shutdownNow")
+    public ExecutorService evaluationTaskExecutor() {
+        return Executors.newFixedThreadPool(4, r -> {
+            Thread t = new Thread(r, "eval-task");
+            t.setDaemon(true);
+            return t;
+        });
     }
 
     /** 批处理装配模板：单次迭代、无工具/无会话/无子代理，模型位按 LLM 开关选择。 */

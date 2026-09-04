@@ -113,6 +113,12 @@ public final class AssistantPolicy {
             return new Tool(sentences("我来查一下当前已发布的工作流。"),
                     List.of(new Call(TOOL_SEARCH_WORKFLOWS, Map.of())));
         }
+        // 2.6 知识库政策值问句（目标/达标线/基线/阈值 + 数值问法）优先于数据指标：
+        // 「留存率目标是多少」问的是运营政策值（在知识库文档），而非实时指标（query_stats 只回实时留存）
+        if (isKbPolicyValueQuestion(last)) {
+            return new Tool(sentences("让我在知识库里检索一下。"),
+                    List.of(new Call(TOOL_SEARCH_KB, Map.of("query", last))));
+        }
         List<String> topics = statsTopics(last);
         if (!topics.isEmpty()) {
             List<Call> calls = topics.stream().map(t -> new Call(TOOL_QUERY_STATS, Map.of("topic", t))).toList();
@@ -161,6 +167,14 @@ public final class AssistantPolicy {
         return text.contains("？") || text.contains("?")
                 || containsAny(text, "怎么", "如何", "什么", "啥", "为什么", "多少", "有哪些", "是什么",
                 "怎么回事", "说明", "解释", "介绍一下", "帮我查", "查一下", "查查", "了解", "详情", "看看", "请问");
+    }
+
+    /** 知识库政策值问句：含政策词（目标/达标线/基线/阈值）且含数值问法（多少/是什么/是几）→ 知识库优先。 */
+    private static boolean isKbPolicyValueQuestion(String text) {
+        if (!containsAny(text, "目标", "达标线", "基线", "阈值")) {
+            return false;
+        }
+        return containsAny(text, "多少", "是什么", "是几");
     }
 
     private static boolean isElaborate(String text) {

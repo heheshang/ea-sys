@@ -43,7 +43,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * M8 扩展：评测异步任务（H1）状态机 + 逐样本结果（H3/M1）+ 取消竞争、报告对比（H4）
  * 与评测目录（H6）。核心断言：202 Accepted → 轮询 COMPLETED、report_id 非空、
  * progress 单调不降、sample_results 逐样本 metrics、数据集停用 → FAILED、
- * 终态取消 400、compare delta 与缺项 null、catalog 15 内置 + 自定义。
+ * 终态取消 400、compare delta 与缺项 null、catalog 17 内置 + 自定义。
  *
  * <p>测试环境 LLM 未启用（无 apiKey）：LLM 判分返回 null、judge_scores 不注入，
  * 逐样本 reason/round_scores 为空属合法——只断言结构，不断言内容。</p>
@@ -307,12 +307,12 @@ class M8EvalTaskTests {
                 .andExpect(status().isBadRequest());
     }
 
-    // ---------- 5. 评测目录：15 内置 + 启用的自定义 ----------
+    // ---------- 5. 评测目录：17 内置（规则 11 + LLM-Judge 6）+ 启用的自定义 ----------
 
     @Test
     void catalogListsBuiltinAndEnabledCustom() throws Exception {
         JsonNode catalog = parse(getJson("/api/evaluations/catalog")).path("data");
-        assertThat(catalog.size()).isEqualTo(15);
+        assertThat(catalog.size()).isEqualTo(17);
         JsonNode na = null;
         JsonNode llm = null;
         for (JsonNode c : catalog) {
@@ -338,7 +338,7 @@ class M8EvalTaskTests {
         body.put("judgePrompt", "");
         long ev = createCustomEvaluator(body);
         catalog = parse(getJson("/api/evaluations/catalog")).path("data");
-        assertThat(catalog.size()).isEqualTo(16);
+        assertThat(catalog.size()).isEqualTo(18);
         boolean found = false;
         for (JsonNode c : catalog) {
             if (("custom_" + ev).equals(c.path("metric").asText())) {
@@ -352,7 +352,7 @@ class M8EvalTaskTests {
         disabled.put("status", "DISABLED");
         long ev2 = createCustomEvaluator(disabled);
         catalog = parse(getJson("/api/evaluations/catalog")).path("data");
-        assertThat(catalog.size()).isEqualTo(16);
+        assertThat(catalog.size()).isEqualTo(18);
         boolean absent = true;
         for (JsonNode c : catalog) {
             if (("custom_" + ev2).equals(c.path("metric").asText())) {

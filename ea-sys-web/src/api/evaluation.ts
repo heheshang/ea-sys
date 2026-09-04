@@ -2,17 +2,24 @@ import { http } from './http'
 import type { AxiosRequestConfig } from 'axios'
 import type {
   ApiResponse,
+  CalibrationResult,
   CaseSaveRequest,
   CaseView,
   CustomEvaluatorView,
   CustomSaveRequest,
+  DashboardView,
   DatasetSaveRequest,
+  DatasetVersionView,
   DatasetView,
   EvaluationRunRequest,
+  HumanReviewSaveRequest,
+  HumanReviewView,
   ImportResultView,
   ReportCompareView,
   ReportView,
+  TaskDetailView,
   TaskView,
+  TranscriptTurnView,
 } from './types'
 
 /** 内置评测器元数据（与 EvaluationModel ALL_METRICS 逐字对齐，代码常量内置不落表）。 */
@@ -29,7 +36,7 @@ export interface EvaluatorMeta {
   origin: string
 }
 
-/** 评测器目录：规则 9 + LLM-Judge 6（参考网络上主流 AI agent 评测指标设计）。 */
+/** 评测器目录：规则 11 + LLM-Judge 6（参考网络上主流 AI agent 评测指标设计）。 */
 export const EVALUATOR_CATALOG: EvaluatorMeta[] = [
   { metric: 'number_accuracy', category: 'rule', group: 'rule', label: '数字准确率', description: '期望数值命中率（期望含数字时适用）', origin: 'GSM8K 数值判分（数值全集命中）' },
   { metric: 'string_exact', category: 'rule', group: 'rule', label: '字符串精确匹配', description: '去除首尾空白后与期望完全一致', origin: 'SQuAD EM 精确匹配' },
@@ -40,6 +47,8 @@ export const EVALUATOR_CATALOG: EvaluatorMeta[] = [
   { metric: 'task_success', category: 'rule', group: 'rule', label: '任务成功率', description: '端到端成功判定：数字全集命中或文本相似度≥0.8', origin: 'GAIA / SWE-bench 端到端任务成功' },
   { metric: 'step_efficiency', category: 'rule', group: 'rule', label: '步数效率', description: '期望步数 / 实际步数（工具调用步 + 回复步）', origin: 'WebArena / AgentBench 步数效率' },
   { metric: 'policy_compliance', category: 'rule', group: 'rule', label: '策略合规率', description: '期望政策条款（必备词/禁区词）逐条合规', origin: 'SafetyBench 安全与策略合规' },
+  { metric: 'rag_hit_rate', category: 'rule', group: 'rule', label: '知识库命中率', description: '期望知识片段与 search_kb 检索命中文档的字符二元组重叠率（execute 专属）', origin: 'RAGAS context precision（检索命中率）' },
+  { metric: 'decision_accuracy', category: 'rule', group: 'rule', label: '决策准确率', description: 'execute 专属：首意图决策准确率（第一条工具调用命中 0.5 / 参数全匹配 1.0 / 无调用 0）', origin: 'τ-bench 首意图决策' },
   { metric: 'llm_correctness', category: 'llm_judge', group: 'llm', label: '正确性', description: 'LLM 判分（未启用时确定性近似）', origin: 'MT-Bench / LLM-as-a-Judge' },
   { metric: 'llm_instruction_following', category: 'llm_judge', group: 'llm', label: '指令遵循', description: 'LLM 判分（未启用时确定性近似）', origin: 'MT-Bench / LLM-as-a-Judge' },
   { metric: 'llm_relevance', category: 'llm_judge', group: 'llm', label: '相关性', description: 'LLM 判分（未启用时确定性近似）', origin: 'MT-Bench / LLM-as-a-Judge' },
@@ -115,10 +124,10 @@ export async function listTasks(): Promise<TaskView[]> {
   return data.data
 }
 
-/** GET /api/evaluations/tasks/{id} —— 任务详情（轮询进度/终态与样本明细）。 */
+/** GET /api/evaluations/tasks/{id} —— 任务详情（后端返回 {task, metrics}，解包取 task）。 */
 export async function getTask(id: number): Promise<TaskView> {
-  const { data } = await http.get<ApiResponse<TaskView>>(`/evaluations/tasks/${id}`)
-  return data.data
+  const { data } = await http.get<ApiResponse<TaskDetailView>>(`/evaluations/tasks/${id}`)
+  return data.data.task
 }
 
 /** POST /api/evaluations/tasks/{id}/cancel —— 协同取消任务（已终态返回 400）。 */
@@ -126,10 +135,10 @@ export async function cancelTask(id: number): Promise<void> {
   await http.post<ApiResponse<null>>(`/evaluations/tasks/${id}/cancel`)
 }
 
-/** GET /api/evaluations/reports/{id}/compare?baseline={reportId} —— 报告基线回归对比（逐指标 delta）。 */
-export async function compareReport(id: number, baselineId: number): Promise<ReportCompareView> {
+/** GET /api/evaluations/reports/{id}/compare?baseline={reportId} —— 报告基线回归对比（逐指标 delta；layer 可选按分层过滤，响应含 topDegradedSamples）。 */
+export async function compareReport(id: number, baselineId: number, layer?: 'basic' | 'edge' | 'real'): Promise<ReportCompareView> {
   const { data } = await http.get<ApiResponse<ReportCompareView>>(`/evaluations/reports/${id}/compare`, {
-    params: { baseline: baselineId },
+    params: { baseline: baselineId, ...(layer ? { layer } : {}) },
   })
   return data.data
 }
@@ -182,4 +191,88 @@ export async function updateCustomEvaluator(id: number, req: CustomSaveRequest):
 /** DELETE /api/evaluations/custom-evaluators/{id} —— 删除自定义评测器。 */
 export async function deleteCustomEvaluator(id: number): Promise<void> {
   await http.delete<ApiResponse<null>>(`/evaluations/custom-evaluators/${id}`)
+}
+
+/* ---------- P1 数据集版本化 ---------- */
+
+/** POST /api/evaluations/datasets/{id}/versions —— 发布新版本（不可变快照）。 */
+export async function publishDatasetVersion(id: number): Promise<DatasetVersionView> {
+  const { data } = await http.post<ApiResponse<DatasetVersionView>>(`/evaluations/datasets/${id}/versions`)
+  return data.data
+}
+
+/** GET /api/evaluations/datasets/{id}/versions —— 版本列表（versionNo DESC）。 */
+export async function listDatasetVersions(id: number): Promise<DatasetVersionView[]> {
+  const { data } = await http.get<ApiResponse<DatasetVersionView[]>>(`/evaluations/datasets/${id}/versions`)
+  return data.data
+}
+
+/** GET /api/evaluations/datasets/{id}/versions/{versionId}/cases —— 版本快照用例（只读）。 */
+export async function getDatasetVersionCases(id: number, versionId: number): Promise<CaseView[]> {
+  const { data } = await http.get<ApiResponse<CaseView[]>>(`/evaluations/datasets/${id}/versions/${versionId}/cases`)
+  return data.data
+}
+
+/** DELETE /api/evaluations/datasets/{id}/versions/{versionId} —— 删除版本（被报告/任务引用时 400）。 */
+export async function deleteDatasetVersion(id: number, versionId: number): Promise<void> {
+  await http.delete<ApiResponse<null>>(`/evaluations/datasets/${id}/versions/${versionId}`)
+}
+
+/* ---------- P2 会话 Transcript ---------- */
+
+/** GET /api/evaluations/reports/{id}/transcript?caseSeq= —— 报告对应用例的逐轮执行转录。 */
+export async function getReportTranscript(reportId: number, caseSeq: number): Promise<TranscriptTurnView[]> {
+  const { data } = await http.get<ApiResponse<TranscriptTurnView[]>>(`/evaluations/reports/${reportId}/transcript`, {
+    params: { caseSeq },
+  })
+  return data.data
+}
+
+/** GET /api/evaluations/tasks/{id}/transcript?caseSeq= —— 任务（运行中/已完成）对应用例的逐轮执行转录。 */
+export async function getTaskTranscript(taskId: number, caseSeq: number): Promise<TranscriptTurnView[]> {
+  const { data } = await http.get<ApiResponse<TranscriptTurnView[]>>(`/evaluations/tasks/${taskId}/transcript`, {
+    params: { caseSeq },
+  })
+  return data.data
+}
+
+/* ---------- P3 人工复评 + 校准 ---------- */
+
+/** POST /api/evaluations/reports/{id}/reviews —— 提交/改判人工复评（upsert：软删旧行 + 插新行）。 */
+export async function submitHumanReview(reportId: number, req: HumanReviewSaveRequest): Promise<HumanReviewView> {
+  const { data } = await http.post<ApiResponse<HumanReviewView>>(`/evaluations/reports/${reportId}/reviews`, req)
+  return data.data
+}
+
+/** GET /api/evaluations/reports/{id}/reviews —— 报告人工复评列表（caseSeq + metric 键）。 */
+export async function listHumanReviews(reportId: number): Promise<HumanReviewView[]> {
+  const { data } = await http.get<ApiResponse<HumanReviewView[]>>(`/evaluations/reports/${reportId}/reviews`)
+  return data.data
+}
+
+/** DELETE /api/evaluations/reviews/{id} —— 删除复评（软删置空）。 */
+export async function deleteHumanReview(id: number): Promise<void> {
+  await http.delete<ApiResponse<null>>(`/evaluations/reviews/${id}`)
+}
+
+/** GET /api/evaluations/reports/{id}/reviews/calibration —— 校准对比（返回 {overall, metrics} 对象，非数组）。 */
+export async function getCalibration(reportId: number): Promise<CalibrationResult> {
+  const { data } = await http.get<ApiResponse<CalibrationResult>>(`/evaluations/reports/${reportId}/reviews/calibration`)
+  return data.data
+}
+
+/* ---------- P4 复现 + 聚合并行看板 ---------- */
+
+/** POST /api/evaluations/reports/{id}/rerun —— 复现报告（复用原数据集版本 + 评测器 + 判分配置，生成新报告）。 */
+export async function rerunReport(id: number): Promise<ReportView> {
+  const { data } = await http.post<ApiResponse<ReportView>>(`/evaluations/reports/${id}/rerun`)
+  return data.data
+}
+
+/** GET /api/evaluations/dashboard?datasetId=&limit= —— 数据集维度聚合看板（分层/趋势/指标/成本延迟/退化样例）。 */
+export async function getDashboard(datasetId: number, limit = 12): Promise<DashboardView> {
+  const { data } = await http.get<ApiResponse<DashboardView>>('/evaluations/dashboard', {
+    params: { datasetId, limit },
+  })
+  return data.data
 }

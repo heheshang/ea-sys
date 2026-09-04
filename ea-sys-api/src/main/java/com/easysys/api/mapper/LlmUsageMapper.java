@@ -91,4 +91,30 @@ public interface LlmUsageMapper extends BaseMapper<LlmUsage> {
             LIMIT 1
             """)
     Map<String, Object> selectLastChatSession(@Param("tenantId") Long tenantId);
+
+    /**
+     * 报告执行统计聚合（评测驾驶舱 execution 卡）：被测智能体会话（assistant /
+     * workflow-dialogue，session_id = {@code traceId-seq}）与判分调用（evaluation，
+     * session_id = traceId 精确）一次查询汇总。全部 COALESCE 防空 → 0。
+     */
+    @InterceptorIgnore(tenantLine = "true")
+    @Select("""
+            SELECT COALESCE(SUM(calls) FILTER (WHERE agent_type IN ('assistant', 'workflow-dialogue')
+                                              AND session_id LIKE #{prefix}), 0)        AS llm_calls,
+                   COALESCE(SUM(input_tokens) FILTER (WHERE agent_type IN ('assistant', 'workflow-dialogue')
+                                                      AND session_id LIKE #{prefix}), 0) AS input_tokens,
+                   COALESCE(SUM(output_tokens) FILTER (WHERE agent_type IN ('assistant', 'workflow-dialogue')
+                                                       AND session_id LIKE #{prefix}), 0) AS output_tokens,
+                   COALESCE(SUM(calls) FILTER (WHERE agent_type = 'evaluation'
+                                               AND session_id = #{traceId}), 0)         AS judge_calls,
+                   COALESCE(SUM(input_tokens) FILTER (WHERE agent_type = 'evaluation'
+                                                      AND session_id = #{traceId}), 0)  AS judge_input_tokens,
+                   COALESCE(SUM(output_tokens) FILTER (WHERE agent_type = 'evaluation'
+                                                       AND session_id = #{traceId}), 0) AS judge_output_tokens
+            FROM llm_usage
+            WHERE tenant_id = #{tenantId} AND session_id LIKE #{prefix}
+            """)
+    Map<String, Object> selectRunUsage(@Param("tenantId") Long tenantId,
+                                       @Param("traceId") String traceId,
+                                       @Param("prefix") String prefix);
 }

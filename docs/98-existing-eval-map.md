@@ -3,7 +3,7 @@
 > 说明：`ea-sys-web/src/api/evaluation.ts`、`docs/04-agent-design.md` §13 已存在，本文是补齐可直接用于规划/改造的**单项能力视角**地图。行文引用以当前代码为准，标注与既有文档的出入。
 > 评测域近期提交：`42b85f3`（LLM 判分并行化，全量 run 约 33s）、`0aad28d`（run 超时修复，nginx 600s）、`3620de4`（对齐：导入/轮次/自定义/TraceID）、`20b8a51`（execute 真实执行 + 四执行维度评测器）。评测中心**整体可用、已在用**（非实验）。
 >
-> 状态（V16 后端重构落地，见 docs/99 实施记录）：异步任务 `evaluation_task` 状态机 + 202 Accepted、LLM-Judge 结构化 `{score,reason}` 逐样本落库（含多轮离散度）、报告对比 compare、评测目录 catalog、CRUD/任务审计补齐。本文 A1「审计落库」、D2.2「仅 run() 落审计」、D4.2 已同步更新；H5/H7/M3/M4 留 roadmap。
+> 状态（V18/V19 评测中心五层架构重构落地，见 docs/99 实施记录）：用例分层 basic/edge/real（40/30/30 目标）+ 逐用例 judge_rule + 发布版本化（`evaluation_dataset_version` 不可变快照，run/task 绑定版本锁复现，旧数据集自动回填 v1）、多轮 dialogue + 完整转录（`evaluation_transcript` + 报告/任务 transcript 端点 + latency_ms）、Human 黄金标准复评/校准（`evaluation_human_review`）、decision_accuracy 规则（内置目录 17 指标 = 规则 11 + LLM-Judge 6）、报告三快照 + execution/layering/recommendation/top_regressions、看板 dashboard、复现 rerun、compare 分层增强（V19 修复 human_review 软删冲突）。本文 A 表已同步新端点；D2 转录缺口、D3/D4.8 数量已更新；H5/H7/M3/M4 留 roadmap。
 
 ---
 
@@ -25,7 +25,8 @@
 | 能力 | 承载文件 | 公开接口 | 前端入口 |
 |---|---|---|---|
 | 数据集 CRUD（scope=llm_call；mode=openjudge/execute；execute 带 agent_type） | `entity/EvaluationDataset.java`、`dto/evaluation/DatasetView.java`、`EvaluationService` | `GET/POST /api/evaluations/datasets`、`PUT/DELETE …/{id}` | `views/EvaluationView.vue` ①数据集卡片（预览/导入 jsonl/用例/编辑/删除） |
-| 用例 CRUD（seq 升序；字段 question/system_prompt/expected_output/tool_schema/expected_tool/expected_steps/expected_policy/provided_response） | `entity/EvaluationCase.java`、`dto/evaluation/CaseView.java` | 列表 `GET …/datasets/{id}/cases`；新增 `POST …/cases`（seq 缺省=max+1）；编辑 `PUT /api/evaluations/cases/{id}`；删除 `DELETE /api/evaluations/cases/{id}` | 用例抽屉 + 用例表单对话框 |
+| 用例 CRUD（seq 升序；字段 question/system_prompt/expected_output/tool_schema/expected_tool/expected_steps/expected_policy/provided_response + V18：category/judge_rule/dialogue） | `entity/EvaluationCase.java`、`dto/evaluation/CaseView.java` | 列表 `GET …/datasets/{id}/cases`；新增 `POST …/cases`（seq 缺省=max+1）；编辑 `PUT /api/evaluations/cases/{id}`；删除 `DELETE /api/evaluations/cases/{id}` | 用例抽屉 + 用例表单对话框（分层下拉 / 判分规则 JSON / 多轮编辑） |
+| 数据集发布版本化（V18）：`evaluation_dataset_version` 快照 = 一行 JSONB 不可变（UNIQUE(tenant,dataset,version_no)，status=PUBLISHED） | `entity/EvaluationDatasetVersion.java` + Mapper + `DatasetVersionView.java`（.agentscope/workspace/eval-rebuild-plan.md 文件级清单） | `POST/GET …/datasets/{id}/versions`（发布 versionNo=max+1/列表）、`GET …/datasets/{id}/versions/{versionId}/cases`（快照只读）、`DELETE …/versions/{versionId}`（未引用可删）；运行 `POST /run` / `POST /tasks` 带 `datasetVersionId`（缺省=最新 PUBLISHED，未发布回退实时） | 发布版本弹窗 + 版本快照只读 + 运行表单版本下拉 |
 | jsonl 批量导入（text/plain：逐行 JSON 或整体数组；question 必填，reference→expected_output、response→provided_response、system_prompt→system_prompt；坏行跳过并回行号） | `service/EvaluationService.java` + `dto/evaluation/ImportResultView.java` | `POST /api/evaluations/datasets/{id}/import` | 导入 jsonl 对话框（导入结果含坏行明细） |
 | 预览前 2 样本 | 前端直取用例列表 | 复用 cases GET | 「预览」按钮 + 预览对话框 |
 
@@ -33,7 +34,7 @@
 
 | 能力 | 承载文件 | 公开接口 / 形态 |
 |---|---|---|
-| 内置评测器目录（代码常量，不落表）：规则 9 + LLM-Judge 6 | 后端 `agent/EvaluationModel.java`（`ALL_METRICS` 逐字对齐）；前端 `api/evaluation.ts` `EVALUATOR_CATALOG` | 前端分组面板（规则判定 9 / LLM-Judge 6，每组一键全选/清空） |
+| 内置评测器目录（代码常量，不落表）：规则 11 + LLM-Judge 6（共 17，V18 新增 decision_accuracy——execute 专属首意图决策） | 后端 `agent/EvaluationModel.java`（`ALL_METRICS` 逐字对齐）；前端 `api/evaluation.ts` `EVALUATOR_CATALOG` | 前端分组面板（规则判定 11 / LLM-Judge 6，每组一键全选/清空） |
 | 自定义评测器 CRUD（category=rule / llm_judge；rule 三型规则；软删） | `entity/EvaluationCustomEvaluator.java`、`dto/evaluation/CustomEvaluatorView.java`、`service/EvaluationService.java`、db `V15`（`evaluation_custom_evaluator`，软删） | `GET/POST /api/evaluations/custom-evaluators`、`PUT/DELETE …/{id}`（评测指标名=`custom_{id}`） |
 | 自定义规则三型（Java 确定性） | `agent/EvaluationModel.java`（按 rule_type 分发） | keyword_contains（keywords 数组：all=true 需全含、prohibit 命中 0、缺省任一命中判 1）、regex_match（`find()` 命中 1）、length_between（长度∈[min,max] 判 1）；params 非法/响应空 → 不适用 |
 | 自定义 LLM-Judge（judge_prompt 含 {question}/{response}/{reference} 占位） | `service/LlmJudgeScorer.java` | 与内置 LLM-Judge 同一判分路径 |
@@ -46,12 +47,18 @@
 | 报告聚合（metrics 均值、findings 分级、summary 总分/verdict） | `dto/evaluation/ReportView.java`、`entity/EvaluationReport.java` | 随 run 返回；`GET /api/evaluations/reports`、`GET …/{id}` |
 | 报告落库（jsonb metrics/findings/summary，含 judgeRounds/traceId） | `entity/EvaluationReport.java` + V12/V14 迁移 | 随 run |
 | 报告删除 | `service/EvaluationService.java` | `DELETE /api/evaluations/reports/{id}` |
+| 完整转录（V18）：`evaluation_transcript`（report_id/case_seq/turn_no/role/text/thinking/tool_use/tool_result，executeSubject 对 AgentState.getContext() 增量采集，截断 thinking/args 4000、output 8000） | `entity/EvaluationTranscript.java` + Mapper（eval-rebuild-plan.md 文件级清单） | `GET /api/evaluations/reports/{id}/transcript?caseSeq=`、`GET /api/evaluations/tasks/{id}/transcript?caseSeq=`（轮次升序，任务执行中可查）；每样本 latency_ms（execute 计时，openjudge null） |
+| Human 黄金标准（V18）：`evaluation_human_review` 复评 + 校准（V19 修复 UNIQUE 与软删墓碑冲突，partial unique 仿 V7 先例） | `entity/EvaluationHumanReview.java` + Mapper（eval-rebuild-plan.md 文件级清单） | `POST/GET /api/evaluations/reports/{id}/reviews`（upsert）、`GET …/reviews/calibration`、`DELETE /api/evaluations/reviews/{id}`；metric='*' 纯人工整分（黄金标准通过率） |
+| 报告驱动统计（V18）：三快照 + execution + layering + recommendation | `entity/EvaluationReport.java`（jsonb 列扩展）+ V18/V19 迁移 | `GET /api/evaluations/reports/{id}` 返回 datasetVersionId/No、envSnapshot（app/java/llm 配置/agent models）、codeSnapshot（git commit/branch/build_time）、execution（延迟 p50/p95/步数/llm 与 judge tokens/estimated_cost_cny，LLM 未启用→「—」）、layering（basic/edge/real count/tested/pass_rate）、summary.recommendation（GO/WATCH/NO_GO + reason）与 top_regressions |
+| 看板（V18） | `service/EvaluationService.java` 聚合 | `GET /api/evaluations/dashboard?datasetId=&limit=`（默认 12 最多 30：layering/trend/metrics/regressions/costLatency） |
+| 复现（V18） | `service/EvaluationService.java` | `POST /api/evaluations/reports/{id}/rerun`（按原报告数据集版本 + 评测器 + judge_rounds 重跑，基线锚定原报告；版本软删→400）；compare 增强 `?baseline=&layer=basic/edge/real` + 响应 topDegradedSamples[] |
 
 ### A5. 前端能力（`ea-sys-web`）
 
 - 页面：`src/views/EvaluationView.vue`（路由 `/evaluations`，name=`evaluations`，meta title 评测中心）。
 - API 客户端：`src/api/evaluation.ts`（含 `EVALUATOR_CATALOG`）；类型 `src/api/types.ts`（DatasetView/CaseView/ReportView/CustomEvaluatorView/ImportResultView/…）。
 - 交互：三组评测器面板（勾选=参与运行，全选/清空）；批量运行表单（数据集+评测器多选+LLM 判分轮次 1-5）；运行中提示「约需 1-3 分钟」且 `timeout: 0` 不限时（对应 0aad28d）；结果头部+指标均值表+findings；报告列表（含判分轮次/traceId列）+ 详情抽屉 + 驾驶舱跳转。
+- V18 交互升级：数据集表分层分布色条列（el-progress 三段 40/30/30 高亮）+ 发布版本弹窗/快照只读；运行表单版本下拉（默认最新已发布）+ datasetVersionId 入参；用例表单 category 下拉 / judge_rule JSON / dialogue 轮次编辑；样本抽屉 transcript 逐轮视图 + latency；报告详情五区块（总览 recommendation 徽章/分层卡/执行统计/Top 退化/复现）+ 复评抽屉 + 校准抽屉；对比三 tab（指标/分层/Top 退化）；看板区块（Element Plus，无图表依赖）；EVALUATOR_CATALOG 17 条双端对齐。
 - LLM 未启用降级提示：面板副标题「LLM 未启用时 LLM-Judge 走确定性近似」。
 
 ---
@@ -69,7 +76,7 @@
 
 ## C. 规划参考号（既有事实，勿重复设计）
 
-1. V12：`agent_cockpit_evaluation.sql`（evaluation_dataset / evaluation_case / evaluation_report 基表）；V14：`agent_evaluation_execute.sql`（execute 模式、agent_type 列、四执行维度评测器）；V15：`evaluation_custom_evaluator`（自定义评估器，软删）。**后续表变更应新建 V16+，禁止改已执行迁移。**
+1. V12：`agent_cockpit_evaluation.sql`（evaluation_dataset / evaluation_case / evaluation_report 基表）；V14：`agent_evaluation_execute.sql`（execute 模式、agent_type 列、四执行维度评测器）；V15：`evaluation_custom_evaluator`（自定义评估器，软删）；V18/V19：`evaluation_dataset_version` / `evaluation_transcript` / `evaluation_human_review` 与报告/jsonb 列扩展。**后续表变更应新建 V20+，禁止改已执行迁移。**
 2. `AgentLlmProperties`（`easysys.agent.llm`：enabled/model-id/base-url/api-key/timeout-ms）+ `ModelRegistry.resolve`：LLM 模型位统一入口；key 缺失/失效/超时/结构不符 → 确定性 fallback，执行不中断。
 3. `AgentPolicy`（`AgentRunConfig`: queued/parallel/sequential + timeoutMs/deterministic+fallback）；`HarnessAgentConfig`：evaluation 装配点。
 4. 前端从 `EVALUATOR_CATALOG` 派生内置评测器分组（rule/llm），自定义评测器 metric=`custom_{id}` 并入 `enabledCustomMetrics`；新增内置评测器需**双端同步**（EvaluationModel 常量 + EVALUATOR_CATALOG）。
@@ -82,13 +89,13 @@
 ### D1. LLM 未启用的降级行为：已实现，非实验
 `AgentLlmProperties.enabled=false` 时执行器保持确定性 RuleModel/EvaluationModel；LLM-Judge 六个指标 + 自定义 llm_judge 走确定性近似（前端明确标注），不发真实 LLM 调用、不写 llm_usage 行；批量运行整体仍成功。文档 §13 已描述。
 
-### D2. 会话全链路消息：部分存在，未暴露到评测域（视为缺）
-- **评测域内**：execute 仅注入「最后回复 + 工具调用链摘要（name/args/result）」与步数，**不保存完整会话转录**；判分输入落 audit 的是 input_summary 摘要。
+### D2. 会话全链路消息：V18 已补齐评测域完整转录（其余部分存在）
+- **评测域内**（V18 已实现）：`evaluation_transcript` 逐轮落库完整转录（report_id/case_seq/turn_no/role/text/thinking/tool_use/tool_result，executeSubject 增量采集，截断 thinking/args 4000、output 8000），`GET /reports/{id}/transcript?caseSeq=` / `GET /tasks/{id}/transcript?caseSeq=` 导出（轮次升序）；判分输入落 audit 的 input_summary 仍为摘要，完整转录另表存储。
 - **系统级已有**（可复用）：`AgentState`/会话转录（llm_usage 台账定位最近会话）+ `llm_usage.lastChatSession/lastChatContext` + 驾驶舱 `GET /api/cockpit/llm-traces?trace=` 按评测 traceId 联动（报告详情「查看会话追踪」跳转，可清空恢复最近 20 条）——但不含评测域完整消息链。**若「会话全链路消息」是待建能力，建议作为新增项，不做实验性标记。**
-- 相同问题「数据/动作/消息的可观性」在评测域**文档仅有 TraceID 联动说明**；完整转录存在于 AgentState 但无评测侧导出接口。
+- 相同问题「数据/动作/消息的可观性」在评测域：完整转录已落 `evaluation_transcript` 并可经报告/任务 transcript 端点导出（V18）；驾驶舱 trace 过滤联动仍按 TraceID 键值匹配。
 
 ### D3. 断言式评测：全部已实现（确定性规则）；LLM 断言与多模型不支持
-- rule 9 + 自定义三条规则全部纯 Java 确定性，无 Python 依赖、无断言式求解器（非可满足性求解）；字符串近似靠二元组 Jaccard/重复率，非 embedding 语义相似。
+- rule 11 + 自定义三条规则全部纯 Java 确定性，无 Python 依赖、无断言式求解器（非可满足性求解）；字符串近似靠二元组 Jaccard/重复率，非 embedding 语义相似。
 - LLM-Judge 6 + 自定义 llm_judge 是**评分式**（0-100 标量均值），非断言式真/假判定。
 - **不支持**：多模型交叉验证/投票判分（每次运行一个模型位，经 ModelRegistry.resolve 取 `easysys.agent.llm`）；结构化评分输出仍靠正则 `\b\d{1,3}\b` 解析（**非实验**，但在线提示词评测领域通常视为近似解析）。
 - 「确定性 + LLM 混合」「LLM 未启用可跑（近似）」是稳定策略，非实验。
@@ -101,7 +108,7 @@
 5. **执行侧被测智能体名称**：execute 支持 `assistant` / `workflow-dialogue`（agent_type 列）——文档一致。
 6. **报告列表含 judgeRounds/traceId**：与文档一致（`GET /api/evaluations/reports` 返回两者）。
 7. 两种模式均真实生成 report 落库；openjudge 不真实运行被测智能体（用预置 provided_response）——文档一致。
-8. 前端评测器面板显示「规则判定 9 + LLM-Judge 6 + 自定义」固定文案；若未来新增内置评测器，此处硬编码总数（9/6）与 `EVALUATOR_CATALOG.filter().length` 不一致风险 —— **实现观感小出入（非功能问题）**。
+8. 前端评测器面板显示「规则判定 11 + LLM-Judge 6 + 自定义」固定文案；若未来新增内置评测器，此处硬编码总数（11/6）与 `EVALUATOR_CATALOG.filter().length` 不一致风险 —— **实现观感小出入（非功能问题）**。
 
 ---
 
@@ -111,4 +118,4 @@
 - 加自定义规则型：`EvaluationModel` 按 rule_type 分发处 + 前端 ruleType 下拉 + types.ts 注释。
 - LLM 相关改造：`AgentLlmProperties` + `ModelRegistry.resolve` + `LlmJudgeScorer`（同步 `blockFirst()` 调用；并行度在 42b85f3 收口处调整）。
 - 判分轮次：`judgeRounds` 1-5，多轮取均值注入 `judge_scores.{metric}`；前端 `runJudgeRounds` 输入框联动。
-- 全链路消息缺口：复用 `AgentState` 转录 + 驾驶舱 trace 过滤为起点，需新增评测侧导出存储/接口。
+- 全链路消息（V18 已闭环）：`evaluation_transcript` 存储 + 报告/任务 transcript 端点导出 + 驾驶舱 trace 过滤联动。

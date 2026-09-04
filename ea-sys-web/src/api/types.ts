@@ -653,6 +653,11 @@ export interface DatasetView {
   agentType: 'assistant' | 'workflow-dialogue'
   status: 'ENABLED' | 'DISABLED'
   caseCount: number
+  /** 最新已发布版本（P1 版本化；旧后端缺省 null） */
+  latestVersionId?: number | null
+  latestVersionNo?: number | null
+  /** 用例分层计数 {basic,edge,real}（旧后端缺省 null） */
+  caseCountByCategory?: { basic: number; edge: number; real: number } | null
   createdBy: string
   createdAt: string
   updatedAt: string
@@ -682,7 +687,15 @@ export interface CaseView {
   expectedSteps: number | null
   /** policy_compliance 期望策略条款 [{keyword, prohibit}] */
   expectedPolicy: unknown
+  /** rag_hit_rate 期望知识库命中要点字符串数组（execute 专属，可选） */
+  expectedKbHits: string[] | null
   providedResponse: string | null
+  /** 分层：basic 基础 / edge 边界 / real 真实（旧后端缺省 basic，访问 ?? 'basic' 兜底） */
+  category?: CaseCategory
+  /** 逐用例判分规则 JSONB：{metric,threshold?,judge_prompt?,rounds?} 或数组（可空） */
+  judgeRule?: JsonValue | null
+  /** 多轮对话（单轮 = null：question 即首轮） */
+  dialogue?: DialogueTurn[] | null
   createdAt: string
 }
 
@@ -696,7 +709,11 @@ export interface CaseSaveRequest {
   expectedTool?: unknown
   expectedSteps?: number | null
   expectedPolicy?: unknown
+  expectedKbHits?: string[] | null
   providedResponse?: string | null
+  category?: CaseCategory
+  judgeRule?: JsonValue | null
+  dialogue?: DialogueTurn[] | null
 }
 
 /** 评测指标均值行（report.metrics[]）。 */
@@ -716,6 +733,242 @@ export interface ReportFinding {
   suggestion?: string | null
 }
 
+/* ---------- M8 重构（P0-P4）：分层 / 版本化 / 多轮 / Transcript / 人工复评 / 看板 ---------- */
+
+/** 用例分层（evaluation_case.category：basic 基础 / edge 边界 / real 真实）。 */
+export type CaseCategory = 'basic' | 'edge' | 'real'
+
+/** 任意 JSON 值（JSONB 列通用）。接口间接引用避免递归类型别名触发 TS2589。 */
+export type JsonValue = null | boolean | number | string | JsonValueArray | JsonValueObject
+export interface JsonValueArray extends Array<JsonValue> {}
+export interface JsonValueObject {
+  [key: string]: JsonValue
+}
+
+/** 多轮对话轮次（evaluation_case.dialogue JSONB 元素；单轮用例 dialogue=null，question 即首轮）。 */
+export interface DialogueTurn {
+  role: 'user' | 'assistant'
+  content: string
+  toolUse?: JsonValue | null
+  toolResult?: JsonValue | null
+}
+
+/** 数据分层统计（{basic:{count,tested,pass_rate},...}；pass_rate 为后端 JSONB 键）。 */
+export interface LayerStat {
+  count: number
+  tested: number
+  /** 通过率 0-1（该层无适用/已测样本 → null） */
+  pass_rate: number | null
+}
+
+/** 三层分布（report.layering / report.summary.layering JSONB）。 */
+export interface LayeringView {
+  basic?: LayerStat | null
+  edge?: LayerStat | null
+  real?: LayerStat | null
+}
+
+/** 报告执行统计（report.execution JSONB，键全 snake 与后端一致）。openjudge 无计时/LLM 记账 → 字段可 null。 */
+export interface ReportExecutionView {
+  total_duration_ms?: number | null
+  avg_latency_ms?: number | null
+  p50_latency_ms?: number | null
+  p95_latency_ms?: number | null
+  avg_steps?: number | null
+  total_steps?: number | null
+  llm_calls?: number | null
+  input_tokens?: number | null
+  output_tokens?: number | null
+  judge_calls?: number | null
+  judge_input_tokens?: number | null
+  judge_output_tokens?: number | null
+  estimated_cost_cny?: number | null
+}
+
+/** 运行环境快照（report.env_snapshot JSONB，键 snake 与后端一致）。 */
+export interface EnvSnapshotView {
+  app_version?: string | null
+  java_version?: string | null
+  llm_enabled?: boolean | null
+  llm_model_id?: string | null
+  agent_models?: Record<string, string> | null
+}
+
+/** 运行代码快照（report.code_snapshot JSONB，键 snake 与后端一致）。 */
+export interface CodeSnapshotView {
+  git_commit?: string | null
+  git_branch?: string | null
+  build_time?: string | null
+}
+
+/** 上线建议（summary.recommendation；旧后端缺省 null）。 */
+export interface RecommendationView {
+  verdict: 'GO' | 'WATCH' | 'NO_GO'
+  reason: string
+}
+
+/** 样例级退化行（summary.top_regressions.samples 元素；auto = 当前报告分）。compare.topDegradedSamples 用 caseSeq，见其自身类型。 */
+export interface TopRegressionSample {
+  seq: number
+  auto?: number | null
+  baseline?: number | null
+  delta?: number | null
+}
+
+/** Top 退化指标（summary.top_regressions.metrics 元素；无基线 = []）。 */
+export interface TopRegressionMetric {
+  metric: string
+  current?: number | null
+  baseline?: number | null
+  delta?: number | null
+}
+
+/** 报告聚合摘要（report.summary JSONB；score/verdict 既有键不变，P3 起追加驱动键）。 */
+export interface SummaryView {
+  score: number
+  verdict: 'PASS' | 'WARN' | 'FAIL'
+  /** 上线建议：GO 绿 / WATCH 橙 / NO_GO 红（旧后端缺省 null） */
+  recommendation?: RecommendationView | null
+  /** 分层统计（旧后端缺省 null） */
+  layering?: LayeringView | null
+  /** 相对基线退化最差 N 个指标（metrics）与跨指标 Top 样例（samples，扁平；无基线 = null） */
+  top_regressions?: { metrics: TopRegressionMetric[] | null; samples: TopRegressionSample[] | null } | null
+}
+
+/** 数据集发布版本（GET /api/evaluations/datasets/{id}/versions）。 */
+export interface DatasetVersionView {
+  id: number
+  datasetId: number
+  versionNo: number
+  status: 'PUBLISHED' | 'DRAFT'
+  caseCount: number
+  publishedAt: string
+  createdBy: string
+}
+
+/** 会话转录轮次（GET /reports/{id}/transcript?caseSeq= 与 /tasks/{id}/transcript?caseSeq= 同构）。 */
+export interface TranscriptTurnView {
+  turnNo: number
+  role: string
+  text?: string | null
+  thinking?: string | null
+  toolUse?: JsonValue | null
+  toolResult?: JsonValue | null
+}
+
+/** 人工复评（GET /api/evaluations/reports/{id}/reviews）。score 0-1 归一，与自动评分为同口径。 */
+export interface HumanReviewView {
+  id: number
+  reportId: number
+  caseSeq: number
+  /** 自动评测器 metric；纯人工整分 = '*'（全指标） */
+  metric: string
+  /** 该样本该指标自动分（autoScore=true 时非空；与人工分同口径 0-1） */
+  auto?: number | null
+  score: number
+  verdict?: string | null
+  note?: string | null
+  reviewer?: string | null
+  createdAt: string
+}
+
+/** 人工复评提交/改判请求（POST /api/evaluations/reports/{id}/reviews，upsert：软删旧行 + 插新行）。 */
+export interface HumanReviewSaveRequest {
+  caseSeq: number
+  metric?: string
+  score: number
+  verdict?: string | null
+  note?: string | null
+}
+
+/** 单指标校准对比行（GET /api/evaluations/reports/{id}/reviews/calibration → metrics[]）。 */
+export interface CalibrationView {
+  metric: string
+  n: number
+  meanAuto?: number | null
+  meanHuman: number
+  meanAbsDiff?: number | null
+  /** 阈值 0.5 内视为一致的样本占比（0-1） */
+  agreementRate?: number | null
+  /** |delta| 最大 N 个样本（caseSeq/auto/human/delta）。 */
+  topDeltas: Array<{ caseSeq: number; auto?: number | null; human: number; delta?: number | null }>
+}
+
+/** 校准汇总（calibration.overall；人工 vs 自动整体口径）。 */
+export interface CalibrationOverall {
+  n: number
+  meanHuman: number
+  passRate: number
+}
+
+/** 校准对比响应（对象：overall 汇总 + metrics 逐指标明细；非数组）。 */
+export interface CalibrationResult {
+  overall?: CalibrationOverall | null
+  metrics: CalibrationView[]
+}
+
+/** 看板趋势行（dashboard.trend[]：score/verdict 内嵌 summary，无顶层 delta）。 */
+export interface DashboardTrendRow {
+  id: number
+  name: string
+  createdAt: string
+  summary: { score: number | null; verdict: string | null }
+  /** 执行统计（snake JSONB 键；openjudge 无计时 → null） */
+  execution?: {
+    total_duration_ms?: number | null
+    avg_latency_ms?: number | null
+    llm_calls?: number | null
+    estimated_cost_cny?: number | null
+  } | null
+}
+
+/** 看板指标序列点（dashboard.metrics.series[].points[]）。 */
+export interface DashboardMetricPoint {
+  reportId: number
+  score: number
+  createdAt: string | null
+}
+
+/** 看板指标序列（dashboard.metrics.series[]）。 */
+export interface DashboardMetricSeries {
+  metric: string
+  points: DashboardMetricPoint[]
+}
+
+/** 看板核心指标对象（dashboard.metrics：series + 各指标 latest/delta 映射，非数组）。 */
+export interface DashboardMetricsView {
+  series: DashboardMetricSeries[]
+  latest: Record<string, number | null>
+  delta: Record<string, number | null>
+}
+
+/** 看板退化行（dashboard.regressions[]：vs 基线；previous 为基线值，非 baseline）。 */
+export interface DashboardRegressionRow {
+  metric: string
+  current?: number | null
+  previous?: number | null
+  delta?: number | null
+}
+
+/** 看板成本/延迟摘要卡（dashboard.costLatency，键 snake 与后端一致）。 */
+export interface DashboardCostLatency {
+  avg_latency_ms?: number | null
+  p95_latency_ms?: number | null
+  avg_steps?: number | null
+  total_tokens?: number | null
+  cost_cny?: number | null
+}
+
+/** 评测看板（GET /api/evaluations/dashboard?datasetId=&limit=；默认 limit 12 最多 30）。 */
+export interface DashboardView {
+  layering?: LayeringView | null
+  trend?: DashboardTrendRow[]
+  metrics?: DashboardMetricsView | null
+  /** 退化指标（vs 基线；previous = 基线值）。 */
+  regressions?: DashboardRegressionRow[] | null
+  costLatency?: DashboardCostLatency | null
+}
+
 /** 评测报告（GET /api/evaluations/reports；metrics/findings/summary 为 JSON 原文）。 */
 export interface ReportView {
   id: number
@@ -725,10 +978,21 @@ export interface ReportView {
   testedCases: number
   metrics: ReportMetric[]
   findings: ReportFinding[]
-  summary: { score: number; verdict: 'PASS' | 'WARN' | 'FAIL' }
+  summary: SummaryView
   confidence: number
   model: string | null
   mode: string
+  /** 运行所用数据集发布版本（旧后端缺省 null；versionNo null = 实时工作区回退） */
+  datasetVersionId?: number | null
+  datasetVersionNo?: number | null
+  /** 执行统计（延迟/步数/token/成本；openjudge 无计时记账 → null） */
+  execution?: ReportExecutionView | null
+  /** 分层统计（与 summary.layering 同构；旧后端 null） */
+  layering?: LayeringView | null
+  /** 运行环境快照（旧后端 null） */
+  envSnapshot?: EnvSnapshotView | null
+  /** 运行代码快照（旧后端 null） */
+  codeSnapshot?: CodeSnapshotView | null
   /** LLM 判分轮数（多次取均值；缺省 1） */
   judgeRounds: number
   /** 运行追踪 ID（驾驶舱 LLM 追踪按此联动过滤） */
@@ -737,9 +1001,11 @@ export interface ReportView {
   createdAt: string
 }
 
-/** 评测运行请求（evaluators 缺省 = 全量 15 个内置评测器；judgeRounds 缺省 1，上限 5）。 */
+/** 评测运行请求（evaluators 缺省 = 全量 17 个内置评测器；judgeRounds 缺省 1，上限 5）。 */
 export interface EvaluationRunRequest {
   datasetId: number
+  /** 数据集发布版本（缺省 = 最新已发布；无已发布版本回退实时用例） */
+  datasetVersionId?: number | null
   evaluators?: string[]
   judgeRounds?: number
 }
@@ -787,7 +1053,8 @@ export interface TaskView {
   id: number
   name: string
   datasetId: number
-  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELED'
+  /** CANCELING：已发起取消、执行线程检查点尚未落定（轮询可能观测到该过渡态） */
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELING' | 'CANCELED'
   totalCases: number
   testedCases: number
   progressPct: number
@@ -800,12 +1067,21 @@ export interface TaskView {
   updatedAt: string
 }
 
+/** 任务详情（GET /api/evaluations/tasks/{id}：task + 执行级指标；列表接口仍为 TaskView[]）。 */
+export interface TaskDetailView {
+  task: TaskView
+  metrics: JsonValue
+}
+
 /** 任务逐样本判分结果（TaskView.sampleResults[]）。 */
 export interface SampleResult {
   seq: number
   question: string
-  actualResponse: string
+  /** 后端 JSONB 键 actual_response（snake） */
+  actual_response: string
   mode: 'openjudge' | 'execute'
+  /** 单样本延迟 ms（后端键 latency_ms；execute 计时；openjudge 无计时 → null；旧后端缺省） */
+  latency_ms?: number | null
   metrics: SampleMetricResult[]
 }
 
@@ -816,6 +1092,8 @@ export interface SampleMetricResult {
   score: number
   passed: boolean
   reason: string | null
+  /** 各轮真实判分（0-100 整数；后端 JSONB 键 round_scores；多轮取均值故带离散度，规则类/单轮为 null） */
+  round_scores: number[] | null
 }
 
 /** 报告基线回归对比行（ReportCompareView.metrics[]）。 */
@@ -825,11 +1103,17 @@ export interface ReportCompareMetric {
   current: number | null
   baseline: number | null
   delta: number | null
+  /** 方向语义（当前恒为 "higher_is_better"） */
+  direction?: string
 }
 
 /** 报告基线回归对比（GET /api/evaluations/reports/{id}/compare?baseline={reportId}）。 */
 export interface ReportCompareView {
   baseline: { id: number; name: string; createdAt: string }
   current: { id: number; name: string; createdAt: string }
+  /** 分层过滤（basic/edge/real；未过滤 = null） */
+  layer?: string | null
   metrics: ReportCompareMetric[]
+  /** 样例级退化（按指标分组、|delta| 降序前 N；键为 caseSeq；旧后端缺省 []） */
+  topDegradedSamples?: Array<{ caseSeq: number; auto?: number | null; baseline?: number | null; delta?: number | null }> | null
 }

@@ -16,7 +16,11 @@ public record CaseView(
         JsonNode expectedTool,
         Integer expectedSteps,
         JsonNode expectedPolicy,
+        JsonNode expectedKbHits,
         String providedResponse,
+        String category,
+        JsonNode judgeRule,
+        JsonNode dialogue,
         Instant createdAt) {
 
     /** 新建/编辑用例请求。 */
@@ -29,6 +33,10 @@ public record CaseView(
             JsonNode expectedTool,
             Integer expectedSteps,
             JsonNode expectedPolicy,
-            String providedResponse) {
+            JsonNode expectedKbHits,
+            String providedResponse,
+            String category,
+            JsonNode judgeRule,
+            JsonNode dialogue) {
     }
 }

@@ -479,11 +479,11 @@ class M8CockpitEvaluationTests {
 
         Map<String, Object> run = new LinkedHashMap<>();
         run.put("datasetId", ds);
-        // 缺省 evaluators → 全量 15 个
+        // 缺省 evaluators → 全量 16 个
         JsonNode data = parse(postJson("/api/evaluations/run", asJson(run))).path("data");
 
         assertThat(data.path("testedCases").asInt()).isEqualTo(1);
-        // 缺省全量 15 个评测器均参与评估；不适用（缺 expected 基准/轨迹）仅以 INFO 发现列出，
+        // 缺省全量 16 个评测器均参与评估；不适用（缺 expected 基准/轨迹）仅以 INFO 发现列出，
         // 不进 metrics。本用例仅有 provided_response、无 expected → 适用 6 个无基准评测器。
         JsonNode metricsNode = data.path("metrics");
         assertThat(metricsNode.size()).isEqualTo(6);

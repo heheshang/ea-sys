@@ -278,7 +278,25 @@ stateDiagram-v2
 | G5/M1 LLM-Judge 结构化输出 | judgeDetailed 返回 `JudgeDetail(mean, rounds[])`，prompt 要求 `{"score":0-100,"reason"}`；解析容错（```json 围栏/前后缀/降级正则），reason 逐样本落库，多轮判分聚合 stddev/mads 离散度（LangSmith 均值/标准差）；`score()` 委托保留 |
 | CRUD 审计补齐 | dataset/case/import/custom/task 全写 agent_audit（_CREATE/_UPDATE/_DELETE、EVALUATION_TASK_CREATE/_CANCEL）；异步任务 run 审计仍只写一次 `evaluation_run` 且为最后一条（M8 `lastAuditLine` 口径不变） |
 | H6 评测目录 | `GET /catalog`：内置 15 指标静态元数据 + 启用的自定义评测器 |
+| RAG 命中率（本系统智能体）| 新规则评测器 rag_hit_rate（execute 专属）：expected_kb_hits 期望片段 × search_kb 实际 hits（documentName+content）字符 bigram 重合 ≥0.5 判中；execute 轨迹增采 actual_tool_results（工具名/状态/输出）；无检索/未调用 → 不适用 INFO（V17） |
 
 **留 roadmap（不实现）**：H5 自动化 CI 接入（GitHub Actions/Slack 通知）、H7 报表导出（CSV/Excel/PDF 下载）、M3 进阶分析（token 成本/耗时/覆盖率）、M4 断言回归（阈值漂移/趋势告警）——理由：内部运营工具优先闭环「跑分→逐样本→对比」主链路，导出/告警/回归属前端与运维层追加，后端契约面先收敛。
 
 **有意偏差**：异步任务逐用例调用确定性 `EvaluationModel.plan()`（纯 Java 规则判分，与批量 `build()` 数学等价，见引擎 EvaluationModel 判分主干对照），未走 harness `AgentPolicy` 15s LLM 尝试额度——批量语义同源、引擎零改动、无 15s 逐用例上限；LLM-Judge 真实判分仍每用例 `blockFirst(Duration.ofMillis(15_000))` 对齐 harness 额度。测试环境 LLM 未启用（无 apiKey）：injectJudgeScores 全 null、`sample_results` 的 reason/round_scores 为空属合法，测试只断言结构。
+
+---
+
+## 实施记录（V18/V19 五层架构重构）
+
+**落地项**（对照 `.agentscope/workspace/eval-rebuild-plan.md` 五层对齐表与契约核对结论）：
+
+| 蓝图五层 | 落地 |
+|---|---|
+| 数据集层 | `evaluation_case` 增 `category`（basic/edge/real，缺省 basic 兼容旧数据）+ `judge_rule`（逐用例评测器/阈值/提示词，单对象或数组，case 级优先运行级兜底）+ `dialogue`（多轮轮次）；新表 `evaluation_dataset_version`（发布快照 = 一行 JSONB 不可变，run/task 绑定版本锁复现，旧数据集自动回填 v1）；分层偏差 <20% 且用例数 ≥5 → findings WARNING |
+| 执行层 | dialogue 轮次顺序调同一 `ReActAgent`（同 sessionId 共享 AgentState 会话历史，工具态跨轮保留）；HITL 工具无人值守仍挂起→超时→不适用（E4 权限自动裁决未实现，记为设计决策） |
+| 记录层 | 新表 `evaluation_transcript`（report_id/case_seq/turn_no/role/text/thinking/tool_use/tool_result，executeSubject 对 AgentState.getContext() 增量采集，截断 thinking/args 4000、output 8000）；`GET /reports/{id}/transcript` 与 `GET /tasks/{id}/transcript`（?caseSeq=，轮次升序）；每样本 latency_ms（execute 计时，openjudge null） |
+| 评分层 | 内置规则 10→11（新增 `decision_accuracy`：首个 executed 工具调用与 expected_tool 匹配——参数全匹配 1.0/命中 0.5/无调用 0，execute 专属，与 tool_call_accuracy 互补）、ALL_METRICS 16→17；LLM-Judge 支持 case.judge_rule 的 judge_prompt/rounds/threshold 覆盖（injectJudgeScores 透传）；Human 黄金标准 `evaluation_human_review` + 复评/列表/删除/校准端点（per-metric n/meanAuto/meanHuman/meanAbsDiff/agreementRate/topDeltas，metric='*' 纯人工整分） |
+| 聚合层 | report 增 dataset_version_id/version_no + env_snapshot（app/java/llm 配置/agent models）+ code_snapshot（git commit/branch/build_time）+ execution（avg_latency/p50/p95/avg_steps/total_steps/llm 与 judge tokens/estimated_cost_cny，LLM 未启用显示「—」）+ layering（basic/edge/real count/tested/pass_rate）；summary 增 recommendation（GO/WATCH/NO_GO + reason：核心指标 <0.6 或回归 >0.1 → NO_GO，<0.8 或 >0.05 → WATCH，否则 GO）与 top_regressions；看板端点 `GET /api/evaluations/dashboard?datasetId=&limit=`（默认 12 最多 30） |
+| 回归/可追溯 | compare 增强 `?layer=basic/edge/real` 过滤 + topDegradedSamples[]（按 seq 对齐、|delta| 降序）；`POST /reports/{id}/rerun`（版本快照复现 + 基线锚定原报告，版本软删→400）；V19 修复 human_review UNIQUE 与软删墓碑冲突（partial unique，仿 V7 先例） |
+
+**测试观测**：全量 192 run 0 失败（agent 39 + api 153）；新增 M8EvalVersionTests（5）/ M8EvalTranscriptTests（5）/ M8EvalHumanReviewTests（2）/ M8EvalDashboardTests（3）四套件；前端 `npm run build` 零错误。**待部署验证**（本文按能力描述，未声明生产验证）。

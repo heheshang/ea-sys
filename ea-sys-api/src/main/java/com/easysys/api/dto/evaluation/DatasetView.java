@@ -1,5 +1,7 @@
 package com.easysys.api.dto.evaluation;
 
+import com.fasterxml.jackson.databind.JsonNode;
+
 import java.time.Instant;
 
 /** 评测数据集视图。 */
@@ -12,6 +14,9 @@ public record DatasetView(
         String agentType,
         String status,
         int caseCount,
+        Long latestVersionId,
+        Integer latestVersionNo,
+        JsonNode caseCountByCategory,
         String createdBy,
         Instant createdAt,
         Instant updatedAt) {

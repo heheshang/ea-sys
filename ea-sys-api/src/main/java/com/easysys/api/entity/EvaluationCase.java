@@ -29,6 +29,17 @@ public class EvaluationCase {
     /** 系统提示词（可选）。 */
     private String systemPrompt;
 
+    /** 用例分层：basic 基础场景 / edge 边界场景 / real 真实轨迹（缺省 basic）。 */
+    private String category;
+
+    /** 逐用例判分规则 JSON（覆盖评测器默认判定，可选）。 */
+    @TableField(typeHandler = JsonbStringTypeHandler.class)
+    private String judgeRule;
+
+    /** 多轮对话用例 JSON（LLM 调用链路多轮评测输入，可选）。 */
+    @TableField(typeHandler = JsonbStringTypeHandler.class)
+    private String dialogue;
+
     /** 期望答案 JSON（判分基准：字符串/数字/对象均可）。 */
     @TableField(typeHandler = JsonbStringTypeHandler.class)
     private String expectedOutput;
@@ -47,6 +58,10 @@ public class EvaluationCase {
     /** 期望策略条款 JSON（policy_compliance 违规检测基准，可选）。 */
     @TableField(typeHandler = JsonbStringTypeHandler.class)
     private String expectedPolicy;
+
+    /** 期望知识库命中要点 JSON 字符串数组（rag_hit_rate 判分基准，execute 专属，可选）。 */
+    @TableField(typeHandler = JsonbStringTypeHandler.class)
+    private String expectedKbHits;
 
     /** OpenJudge 预置响应文本：直接作为实际响应判分，跳过被测智能体执行。 */
     private String providedResponse;
@@ -103,6 +118,30 @@ public class EvaluationCase {
         this.systemPrompt = systemPrompt;
     }
 
+    public String getCategory() {
+        return category;
+    }
+
+    public void setCategory(String category) {
+        this.category = category;
+    }
+
+    public String getJudgeRule() {
+        return judgeRule;
+    }
+
+    public void setJudgeRule(String judgeRule) {
+        this.judgeRule = judgeRule;
+    }
+
+    public String getDialogue() {
+        return dialogue;
+    }
+
+    public void setDialogue(String dialogue) {
+        this.dialogue = dialogue;
+    }
+
     public String getExpectedOutput() {
         return expectedOutput;
     }
@@ -141,6 +180,14 @@ public class EvaluationCase {
 
     public void setExpectedPolicy(String expectedPolicy) {
         this.expectedPolicy = expectedPolicy;
+    }
+
+    public String getExpectedKbHits() {
+        return expectedKbHits;
+    }
+
+    public void setExpectedKbHits(String expectedKbHits) {
+        this.expectedKbHits = expectedKbHits;
     }
 
     public String getProvidedResponse() {

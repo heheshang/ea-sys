@@ -19,12 +19,16 @@ import java.util.regex.Pattern;
  * 确定性评测规划器（规则主实现/兜底）：按评测器目录对每个用例打分、聚合指标均值、
  * 产分级发现与汇总 verdict。输出自洽满足 {@link LayerSchemas#evaluationReportSchema()}。
  *
- * <p>评测器 = 内置常量目录（15 个，代码内置不落表）：
+ * <p>评测器 = 内置常量目录（17 个，代码内置不落表）：
  * <ul>
- *   <li>规则 9：number_accuracy / string_exact / response_repetition / text_similarity /
- *       observation_information_gain / tool_call_accuracy / task_success / step_efficiency /
- *       policy_compliance —— 纯确定性算法，本类内实现（后 4 个为执行维度评测器：工具调用
- *       正确性 / 端到端任务成功 / 轨迹步数效率 / 策略合规）。</li>
+ *   <li>规则 11：number_accuracy / string_exact / response_repetition / text_similarity /
+ *       observation_information_gain / tool_call_accuracy / decision_accuracy / task_success /
+ *       step_efficiency / policy_compliance / rag_hit_rate —— 纯确定性算法，本类内实现
+ *       （后 6 个为执行维度评测器：工具调用正确性 / 首意图决策准确率（execute 专属：仅判
+ *       首个已执行工具调用与期望工具/参数的匹配度）/ 端到端任务成功 / 轨迹步数效率 /
+ *       策略合规 / 知识库检索命中率（execute 专属：expected_kb_hits 期望片段与 search_kb
+ *       检索结果拼接文本的字符 bigram 重叠率判命中，需知识库已有文档且用例配置
+ *       expectedKbHits））。</li>
  *   <li>LLM-Judge 6：llm_correctness / llm_instruction_following / llm_relevance /
  *       llm_hallucination / llm_reasoning_groundedness / llm_response_completeness ——
  *       LLM 提供方未启用（easysys.agent.llm.enabled=false，默认）时以规则近似降级
@@ -57,13 +61,17 @@ import java.util.regex.Pattern;
  *             "expected_output": any, "expected_tool": {"name": "...", "args": {...}},
  *             "tool_schema": {...}, "expected_steps": N,
  *             "expected_policy": [{"keyword": "...", "prohibit": false}],
+ *             "expected_kb_hits": ["..."],
  *             "provided_response": "...", "actual_response": "...",
- *             "actual_tool_calls": [{"name": "...", "args": {...}}], "actual_steps": N}],
+ *             "actual_tool_calls": [{"name": "...", "args": {...}}], "actual_steps": N,
+ *             "actual_tool_results": [{"name": "search_kb", "state": "success",
+ *                                      "output": "{\"hits\":[...]}"}]}],
  *  "evaluators": [{"metric": "...", "category": "rule|llm_judge"}]}
  * </pre>
  * actual_response 为判分对象：openjudge 模式取 provided_response（跳过执行），
  * execute 模式由 service 先运行被测智能体注入，并注入实际工具调用轨迹
- * （actual_tool_calls）与实际步数（actual_steps，工具调用步 + 最终回复步）。
+ * （actual_tool_calls）、实际步数（actual_steps，工具调用步 + 最终回复步）与实际
+ * 工具结果（actual_tool_results：name/state/output，rag_hit_rate 判分输入）。
  * 规则与降级近似全部确定性、无随机、无网络。
  */
 public final class EvaluationModel implements StrategyAgent, AgentFallback {
@@ -79,9 +87,11 @@ public final class EvaluationModel implements StrategyAgent, AgentFallback {
             "text_similarity",
             "observation_information_gain",
             "tool_call_accuracy",
+            "decision_accuracy",
             "task_success",
             "step_efficiency",
-            "policy_compliance");
+            "policy_compliance",
+            "rag_hit_rate");
 
     /** LLM-Judge 评测器（LLM 未启用时确定性近似降级）。 */
     public static final List<String> LLM_JUDGE_METRICS = List.of(
@@ -92,7 +102,7 @@ public final class EvaluationModel implements StrategyAgent, AgentFallback {
             "llm_reasoning_groundedness",
             "llm_response_completeness");
 
-    /** 全部 15 个内置评测器。 */
+    /** 全部 17 个内置评测器。 */
     public static final List<String> ALL_METRICS = concat(RULE_METRICS, LLM_JUDGE_METRICS);
 
     /** 自定义评测器定义（input.custom_evaluators 注入，指标名 custom_{id}）。 */
@@ -145,7 +155,7 @@ public final class EvaluationModel implements StrategyAgent, AgentFallback {
             }
         }
 
-        // 选中的评测器（缺省 = 全量 15 个内置；自定义评测器需显式选择）
+        // 选中的评测器（缺省 = 全量 16 个内置；自定义评测器需显式选择）
         List<EvaluatorSpec> selected = new ArrayList<>();
         if (evaluators == null || evaluators.isEmpty()) {
             for (String m : ALL_METRICS) {
@@ -278,6 +288,10 @@ public final class EvaluationModel implements StrategyAgent, AgentFallback {
         if (custom != null && "rule".equals(custom.category())) {
             return customRuleScore(custom.ruleType(), custom.params(), c);
         }
+        if ("rag_hit_rate".equals(metric)) {
+            // 只依赖 actual_tool_results + expected_kb_hits，与 actual_response 无关（openjudge 无工具结果 → null）
+            return ragHitRate(c);
+        }
         String actual = text(c.path("actual_response"));
         if (actual.isEmpty()) {
             return null;
@@ -300,6 +314,8 @@ public final class EvaluationModel implements StrategyAgent, AgentFallback {
                 return infoGain(question, systemPrompt, actual);
             case "tool_call_accuracy":
                 return toolCallAccuracy(c);
+            case "decision_accuracy":
+                return decisionAccuracy(c);
             case "task_success":
                 return taskSuccess(expected, actual);
             case "step_efficiency":
@@ -470,6 +486,37 @@ public final class EvaluationModel implements StrategyAgent, AgentFallback {
         return 0.0;
     }
 
+    /**
+     * decision_accuracy：首意图决策准确率——仅判首个已执行工具调用与期望工具/参数的匹配度。
+     * expected_tool 无或 name 空 → 不适用（null）；actual_tool_calls 缺失/非数组（openjudge
+     * 无轨迹）→ 不适用（null）；execute 已执行但无任何工具调用（空数组）→ 0.0（作了决策但
+     * 未执行任何工具）；首条调用 name 精确命中且期望参数全匹配 → 1.0，仅 name 命中 → 0.5，
+     * name 不命中 → 0.0（与 tool_call_accuracy 的「任一命中」不同：这里是首个决策）。
+     */
+    private static Double decisionAccuracy(JsonNode c) {
+        JsonNode expectedTool = c.path("expected_tool");
+        String expectedName = expectedTool.isObject() ? expectedTool.path("name").asText("") : "";
+        if (expectedName.isBlank()) {
+            return null;
+        }
+        JsonNode calls = c.path("actual_tool_calls");
+        if (!calls.isArray()) {
+            return null; // openjudge 无轨迹（未执行）→ 不适用
+        }
+        if (calls.isEmpty()) {
+            return 0.0; // execute 已执行但未调用任何工具 → 决策失败
+        }
+        JsonNode first = calls.get(0);
+        if (!first.isObject() || !expectedName.equals(first.path("name").asText(""))) {
+            return 0.0;
+        }
+        JsonNode expectedArgs = expectedTool.path("args");
+        if (!expectedArgs.isObject() || argsMatch(expectedArgs, first.path("args"))) {
+            return 1.0; // 未给期望参数或参数全匹配 → 满分
+        }
+        return 0.5; // 工具名命中但参数不符
+    }
+
     /** expected args 中每个键在 actual args 中结构等值才算匹配（期望只约束关键参数）。 */
     private static boolean argsMatch(JsonNode expectedArgs, JsonNode actualArgs) {
         if (actualArgs == null || actualArgs.isMissingNode() || actualArgs.isNull()) {
@@ -540,6 +587,107 @@ public final class EvaluationModel implements StrategyAgent, AgentFallback {
             }
         }
         return 1.0;
+    }
+
+    /**
+     * rag_hit_rate（execute 专属）：期望知识片段 {@code expected_kb_hits} 逐个与
+     * search_kb 检索结果拼接文本（hitsText = 全部 search_kb 结果命中的 documentName + content
+     * 拼接）做字符 bigram 重叠判命中：交集非空且 |交集|/|期望片段 bigram 集| ≥ 0.5 计命中。
+     * 片段先 normalize（去空白 + Unicode 标点），normalize 后为空（空/纯标点）的片段跳过
+     * （不进分母）；无 search_kb 调用、命中文本为空、或无可判片段 → 不适用（null，INFO 发现）。
+     * openjudge 模式无 actual_tool_results → 全部不适用，不报错。
+     */
+    private static Double ragHitRate(JsonNode c) {
+        JsonNode expected = c.path("expected_kb_hits");
+        if (!expected.isArray() || expected.isEmpty()) {
+            return null;
+        }
+        String hitsText = ragHitsText(c.path("actual_tool_results"));
+        if (hitsText == null) {
+            return null;
+        }
+        Set<String> hitGrams = ragBigrams(hitsText);
+        if (hitGrams.isEmpty()) {
+            return null;
+        }
+        int judgeable = 0;
+        int hit = 0;
+        for (JsonNode frag : expected) {
+            if (!frag.isTextual()) {
+                continue;
+            }
+            Set<String> eg = ragBigrams(frag.asText());
+            if (eg.isEmpty()) {
+                continue; // 空/纯标点片段不判分、不进分母
+            }
+            judgeable++;
+            Set<String> inter = new HashSet<>(eg);
+            inter.retainAll(hitGrams);
+            if (!inter.isEmpty() && (double) inter.size() / eg.size() >= 0.5) {
+                hit++;
+            }
+        }
+        return judgeable == 0 ? null : (double) hit / judgeable;
+    }
+
+    /**
+     * 拼接 search_kb 工具结果命中文档（documentName + content 逐条拼接，全部命中不截断）；
+     * 无 search_kb 调用或命中为空 → null。output 为 executeSubject 采集的首 TextBlock 文本
+     * （KbSearchView JSON 字符串）；非 JSON（如 "Error: ..."）自动跳过。不按 state 过滤。
+     */
+    private static String ragHitsText(JsonNode toolResults) {
+        if (toolResults == null || !toolResults.isArray()) {
+            return null;
+        }
+        StringBuilder sb = null;
+        for (JsonNode tr : toolResults) {
+            if (!"search_kb".equals(tr.path("name").asText(""))) {
+                continue;
+            }
+            JsonNode out = tr.path("output");
+            JsonNode parsed = null;
+            if (out.isTextual()) {
+                try {
+                    parsed = MAPPER.readTree(out.asText());
+                } catch (Exception ignored) {
+                    // 非 JSON 文本跳过该结果
+                }
+            } else if (out.isObject() || out.isArray()) {
+                parsed = out;
+            }
+            if (parsed == null || !parsed.path("hits").isArray()) {
+                continue;
+            }
+            for (JsonNode hit : parsed.path("hits")) {
+                String name = hit.path("documentName").asText("");
+                String content = hit.path("content").asText("");
+                if (name.isEmpty() && content.isEmpty()) {
+                    continue;
+                }
+                if (sb == null) {
+                    sb = new StringBuilder();
+                }
+                sb.append(name).append(content);
+            }
+        }
+        return sb == null ? null : sb.toString();
+    }
+
+    /** 字符 bigram 集：normalize 去空白 + Unicode 标点；长度 1 → 单字符集；空 → 空集。 */
+    private static Set<String> ragBigrams(String s) {
+        String clean = s.replaceAll("(?U)[\\s\\p{P}]", "");
+        Set<String> out = new HashSet<>();
+        if (clean.isEmpty()) {
+            return out;
+        }
+        if (clean.length() == 1) {
+            out.add(clean);
+            return out;
+        }
+        for (int i = 0; i < clean.length() - 1; i++) {
+            out.add(clean.substring(i, i + 2));
+        }
+        return out;
     }
 
     /** llm_hallucination（降级近似）：1 - 无依据内容占比；依据 = question+system_prompt+expected。 */

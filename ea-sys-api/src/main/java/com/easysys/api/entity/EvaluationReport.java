@@ -41,6 +41,22 @@ public class EvaluationReport {
     @TableField(typeHandler = JsonbStringTypeHandler.class)
     private String summary;
 
+    /** 执行统计 JSON：{total_duration_ms, avg_latency_ms, p50_latency_ms, p95_latency_ms, ...}。 */
+    @TableField(typeHandler = JsonbStringTypeHandler.class)
+    private String execution;
+
+    /** 运行环境快照 JSON：{app_version, java_version, llm_enabled, llm_model_id, agent_models}。 */
+    @TableField(typeHandler = JsonbStringTypeHandler.class)
+    private String envSnapshot;
+
+    /** 代码快照 JSON：{git_commit, git_branch, build_time}。 */
+    @TableField(typeHandler = JsonbStringTypeHandler.class)
+    private String codeSnapshot;
+
+    /** 分层洞察 JSON：{basic, edge, real: {count, tested, pass_rate}}。 */
+    @TableField(typeHandler = JsonbStringTypeHandler.class)
+    private String layering;
+
     /** 报告置信度 0-1（确定性规则模式恒 1.0）。 */
     private BigDecimal confidence;
 
@@ -55,6 +71,12 @@ public class EvaluationReport {
 
     /** 运行追踪 ID（驾驶舱 LLM 调用联动）。 */
     private String traceId;
+
+    /** 运行绑定数据集版本 id（缺省取最新已发布；无版本回退实时用例则 null）。 */
+    private Long datasetVersionId;
+
+    /** 运行绑定数据集版本号（与 datasetVersionId 同源）。 */
+    private Integer datasetVersionNo;
 
     private String createdBy;
     private Instant createdAt;
@@ -133,6 +155,38 @@ public class EvaluationReport {
         this.summary = summary;
     }
 
+    public String getExecution() {
+        return execution;
+    }
+
+    public void setExecution(String execution) {
+        this.execution = execution;
+    }
+
+    public String getEnvSnapshot() {
+        return envSnapshot;
+    }
+
+    public void setEnvSnapshot(String envSnapshot) {
+        this.envSnapshot = envSnapshot;
+    }
+
+    public String getCodeSnapshot() {
+        return codeSnapshot;
+    }
+
+    public void setCodeSnapshot(String codeSnapshot) {
+        this.codeSnapshot = codeSnapshot;
+    }
+
+    public String getLayering() {
+        return layering;
+    }
+
+    public void setLayering(String layering) {
+        this.layering = layering;
+    }
+
     public BigDecimal getConfidence() {
         return confidence;
     }
@@ -171,6 +225,22 @@ public class EvaluationReport {
 
     public void setTraceId(String traceId) {
         this.traceId = traceId;
+    }
+
+    public Long getDatasetVersionId() {
+        return datasetVersionId;
+    }
+
+    public void setDatasetVersionId(Long datasetVersionId) {
+        this.datasetVersionId = datasetVersionId;
+    }
+
+    public Integer getDatasetVersionNo() {
+        return datasetVersionNo;
+    }
+
+    public void setDatasetVersionNo(Integer datasetVersionNo) {
+        this.datasetVersionNo = datasetVersionNo;
     }
 
     public String getCreatedBy() {

@@ -7,7 +7,11 @@ import java.util.List;
 public record ReportCompareView(
         ReportRef baseline,
         ReportRef current,
-        List<CompareMetric> metrics) {
+        List<CompareMetric> metrics,
+        /** 分层过滤参数回显（basic/edge/real；null = 未按层过滤）。 */
+        String layer,
+        /** 逐样本降级前 5（两份报告均有关联任务逐样本时按 |delta| 降序；无逐样本数据 → 空列表）。 */
+        List<TopDegradedSample> topDegradedSamples) {
 
     /** 报告引用信息。 */
     public record ReportRef(
@@ -24,5 +28,13 @@ public record ReportCompareView(
             Double baseline,
             Double delta,
             String direction) {
+    }
+
+    /** 逐样本降级：同 caseSeq 当前/基线分数对齐；缺项为 null，delta = auto - baseline。 */
+    public record TopDegradedSample(
+            Long caseSeq,
+            Double auto,
+            Double baseline,
+            Double delta) {
     }
 }
